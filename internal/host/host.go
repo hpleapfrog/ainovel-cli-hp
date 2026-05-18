@@ -751,7 +751,7 @@ func (h *Host) ImportFrom(ctx context.Context, opts imp.Options) (<-chan imp.Eve
 	}
 	h.mu.Unlock()
 
-	rulesOpts := rules.DefaultOptions(h.bundle.RulesFS, h.cfg.OutputDir)
+	rulesOpts := rules.DefaultOptions(h.bundle.RulesFS)
 	deps := imp.Deps{
 		Store:      h.store,
 		CommitTool: tools.NewCommitChapterTool(h.store).WithRules(rulesOpts),

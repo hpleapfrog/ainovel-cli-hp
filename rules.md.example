@@ -1,6 +1,7 @@
 ---
-# 题材：非空时自动加载 assets/rules/genres/<genre>.md
-# Phase 1 内置仅占位，自定义题材包留到 Phase 3。
+# 题材标签：当前作为字符串透传到 working_memory.user_rules.structured.genre，
+# 供 LLM 在偏好语义判断时参考。题材规则库（assets/rules/genres/）暂未开放，
+# 未来真要按题材机械加载内置文件时再恢复二阶段 loader。
 genre: xianxia
 
 # 章节字数范围（min-max）。偏差 < 20% 报 warning；≥ 20% 报 error。
@@ -60,21 +61,19 @@ cp rules.md.example rules.md
 # 编辑 rules.md 改成你的偏好
 ```
 
-加载优先级（高 → 低）：
-1. `./rules.md`（**当前工作目录规则**，绑定 cwd 而非 outputDir）
-2. `output/<novel>/meta/rules.learned.md`（Phase 2 系统学习的偏好，绑定具体小说）
-3. `~/.ainovel/rules.md`（你的全局偏好，跨书复用）
-4. `assets/rules/genres/<genre>.md`（题材内置规则）
-5. `assets/rules/default.md`（项目默认）
+加载优先级（高 → 低）三层：
 
-普通结构化字段多来源声明且值不一致时，**就近优先**且写入 `conflicts` 让 editor 可见。
-`fatigue_words` 按词合并；同一词在多来源声明不同阈值时，就近优先并写入该词的 `conflicts`。
+1. `./rules.md` — **本书规则**（绑定当前工作目录 cwd）
+2. `~/.ainovel/rules.md` — **全局偏好**（跨书复用）
+3. `assets/rules/default.md` — **项目内置默认**
 
-## 多本书并行的注意事项
+多来源声明同一字段且值不一致时**就近优先**生效；`fatigue_words` 按词合并，同一词在多来源声明不同阈值时按就近优先。冲突写进内部诊断信息（不进 LLM 上下文，由 CLI 启动面板按需展示），不阻断加载。
 
-`./rules.md` 绑定 **当前工作目录**，不绑定小说输出目录。这意味着：
+## 多本书并行
+
+`./rules.md` 绑定 **当前工作目录**，不绑定小说输出目录：
 
 - ✅ 推荐：每本书 cd 到独立目录启动（`cd works/xiyou && ainovel-cli` / `cd works/honglou && ainovel-cli`）— 每本书的 `./rules.md` 独立
 - ⚠️ 边缘：从同一 cwd 用 `-o output/xiyou` / `-o output/honglou` 切换两本书 — 这两本书会共享同一份 `./rules.md`
 
-如需"严格本书隔离"且不想换 cwd，把偏好放 `~/.ainovel/rules.md` 全局层，让所有书共享一套用户偏好。Phase 2 的 `rules.learned.md` 会写到 `output/<novel>/meta/`，跟具体小说绑定。
+如需"严格本书隔离"且不想换 cwd，把偏好放 `~/.ainovel/rules.md` 全局层，让所有书共享一套用户偏好。

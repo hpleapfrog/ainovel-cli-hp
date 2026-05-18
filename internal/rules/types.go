@@ -12,18 +12,17 @@
 package rules
 
 // SourceKind 标记规则来源，用于合并时的就近优先排序。
-// 值越大越就近：Project > Learned > Global > Genre > Default。
+// 值越大越就近：Project > Global > Default。
+//
+// Phase 1.1 起只支持三层。Genre / Learned 层在实际题材库 / save_rule 落地前不开洞——
+// 真要扩展时再加常量并补 loader 即可，不留空架子。
 type SourceKind int
 
 const (
 	// SourceDefault — 项目内置默认规则（assets/rules/default.md），优先级最低。
 	SourceDefault SourceKind = iota
-	// SourceGenre — 题材规则（assets/rules/genres/<genre>.md，由 effective genre 触发）。
-	SourceGenre
-	// SourceGlobal — 用户全局偏好（~/.ainovel/rules.md）。
+	// SourceGlobal — 用户全局偏好（~/.ainovel/rules.md），跨书复用。
 	SourceGlobal
-	// SourceLearned — Phase 2 save_rule 写入（output/novel/meta/rules.learned.md），优先级第二高。
-	SourceLearned
 	// SourceProject — 本书规则（./rules.md），优先级最高。
 	SourceProject
 )
@@ -33,12 +32,8 @@ func (k SourceKind) String() string {
 	switch k {
 	case SourceDefault:
 		return "default"
-	case SourceGenre:
-		return "genre"
 	case SourceGlobal:
 		return "global"
-	case SourceLearned:
-		return "learned"
 	case SourceProject:
 		return "project"
 	default:

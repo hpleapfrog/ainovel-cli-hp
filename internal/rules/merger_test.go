@@ -84,7 +84,7 @@ func TestMerge_NearestWinsList(t *testing.T) {
 func TestMerge_FatigueWordsMergeByKey(t *testing.T) {
 	// genre fatigue {不禁:1}; project fatigue {竟然:2} → 按词合并，避免用户只新增一词时丢失默认规则
 	layers := []Parsed{
-		makeParsed("genre.md", SourceGenre, Structured{
+		makeParsed("default.md", SourceDefault, Structured{
 			FatigueWords: map[string]int{"不禁": 1},
 		}, ""),
 		makeParsed("project.md", SourceProject, Structured{

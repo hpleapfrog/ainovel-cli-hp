@@ -43,7 +43,7 @@ func BuildCoordinator(
 	recordUsage UsageRecorder,
 ) (*agentcore.Agent, *tools.AskUserTool, *ctxpack.WriterRestorePack, *corecontext.ContextEngine) {
 	// 共享工具
-	rulesOpts := rules.DefaultOptions(bundle.RulesFS, cfg.OutputDir)
+	rulesOpts := rules.DefaultOptions(bundle.RulesFS)
 	contextTool := tools.NewContextTool(store, bundle.References, cfg.Style, rulesOpts)
 	readChapter := tools.NewReadChapterTool(store)
 	askUser := tools.NewAskUserTool()
