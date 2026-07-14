@@ -217,15 +217,6 @@ func TestRoute_ArcEndNonLayeredSkipsBoundary(t *testing.T) {
 	}
 }
 
-func TestFormatMessage(t *testing.T) {
-	msg := FormatMessage(&Instruction{Agent: "writer", Task: "写第 5 章", Reason: "续写"})
-	for _, want := range []string{"[Host 下达指令]", "subagent(writer, \"写第 5 章\")", "agent: writer", "task: \"写第 5 章\"", "续写", "必须原样使用", "不要改写 task", "不要先调 novel_context"} {
-		if !contains(msg, want) {
-			t.Errorf("message missing %q: %s", want, msg)
-		}
-	}
-}
-
 func contains(s, sub string) bool {
 	for i := 0; i+len(sub) <= len(s); i++ {
 		if s[i:i+len(sub)] == sub {
@@ -235,7 +226,7 @@ func contains(s, sub string) bool {
 	return false
 }
 
-// 规划期补齐:设定缺项 + 规划师可判定 → 照缺项续派同一规划师(查表型,原属 coordinator.md 裁定)。
+// 规划期补齐:设定缺项 + 规划师可判定 → 照缺项续派同一规划师。
 func TestRoute_PlanningFillDispatchesSamePlanner(t *testing.T) {
 	base := State{
 		Progress:          &domain.Progress{Phase: domain.PhaseOutline},

@@ -84,35 +84,8 @@ func renderEventLine(ev host.Event, width, spinnerFrame int) string {
 		}
 		return line
 
-	case ev.Category == "DONE":
-		// 兼容旧 replay 数据；新流程不再产生 DONE 独立事件
-		icon := lipgloss.NewStyle().Foreground(colorSuccess).Render("✓")
-		color := eventAgentColor(ev.Agent)
-		name := lipgloss.NewStyle().Foreground(color).Render(agentDisplayName(ev.Agent))
-		return tsStr + " " + icon + " " + name + durStr
-
-	case ev.Category == "TOOL" && ev.Depth == 0:
-		// coordinator 自身工具
-		var icon, sum string
-		switch {
-		case running:
-			icon = lipgloss.NewStyle().Foreground(colorAccent).Bold(true).Render(runningSpinner(spinnerFrame))
-			sum = lipgloss.NewStyle().Foreground(colorAccent).Bold(true).Render(truncate(ev.Summary, maxSumW))
-		case ev.Failed:
-			icon = lipgloss.NewStyle().Foreground(colorError).Bold(true).Render("✕")
-			sum = lipgloss.NewStyle().Foreground(colorError).Render(truncate(ev.Summary, maxSumW))
-		default:
-			icon = lipgloss.NewStyle().Foreground(colorTool).Render("◇")
-			sum = lipgloss.NewStyle().Foreground(colorTool).Render(truncate(ev.Summary, maxSumW))
-		}
-		line := tsStr + " " + icon + " " + sum
-		if !running {
-			line += durStr
-		}
-		return line
-
 	case ev.Category == "TOOL":
-		// subagent 内部工具（Depth=1）
+		// Worker 内部工具（Depth=1）
 		var icon, sum string
 		switch {
 		case running:

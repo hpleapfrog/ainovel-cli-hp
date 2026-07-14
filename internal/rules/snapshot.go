@@ -109,7 +109,7 @@ func BuildSnapshot(cands []Candidate) Snapshot {
 
 // OverlaySnapshot 把一个高优先级候选叠加到已有快照上（候选胜出）。
 //
-// 用于运行中 save_user_rules：不重新归一化所有来源，只把新规则覆盖进当前快照——
+// 用于运行中 Arbiter rules 动作：不重新归一化所有来源，只把新规则覆盖进当前快照——
 // structured 按字段覆盖、preferences 追加一段、sources/uncertain 累加、降级传播。
 func OverlaySnapshot(base Snapshot, cand Candidate) Snapshot {
 	out := base

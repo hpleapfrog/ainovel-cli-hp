@@ -227,8 +227,8 @@ type PlanStartRecord struct {
 // PauseAfterRewritesDrained 停靠点条件：重写队列排空后暂停。
 const PauseAfterRewritesDrained = "rewrites_drained"
 
-// PausePoint 用户停靠点：用户级运行意图（非创作事实），由 Coordinator 裁定
-// 干预意图后经工具落盘，Host 在流程边界查表消费，一次性。
+// PausePoint 用户停靠点：用户级运行意图（非创作事实），由 Arbiter 裁定、
+// Engine 落盘，Host 在流程边界查表消费，一次性。
 type PausePoint struct {
 	After  string `json:"after"`            // 触发条件，见 PauseAfter* 常量
 	Reason string `json:"reason,omitempty"` // 用户诉求摘要，用于暂停事件文案

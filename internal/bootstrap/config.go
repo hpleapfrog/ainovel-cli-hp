@@ -9,6 +9,7 @@ import (
 	"github.com/voocel/agentcore/llm"
 	"github.com/voocel/ainovel-cli/internal/errs"
 	"github.com/voocel/ainovel-cli/internal/models"
+	"github.com/voocel/ainovel-cli/internal/notify"
 	"github.com/voocel/ainovel-cli/internal/utils"
 )
 
@@ -102,12 +103,12 @@ type RoleConfig struct {
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 }
 
-// knownRoles 支持的角色名。
+// knownRoles 支持的可配置角色名。Arbiter 当前不开放角色级配置，
+// 统一使用顶层默认模型（host.arbiterModel 用 models.Default）。
 var knownRoles = map[string]bool{
-	"coordinator": true,
-	"architect":   true,
-	"writer":      true,
-	"editor":      true,
+	"architect": true,
+	"writer":    true,
+	"editor":    true,
 }
 
 // Config 小说应用配置。
@@ -160,7 +161,7 @@ func (b BudgetConfig) Enabled() bool { return b.BookUSD > 0 }
 type NotifyConfig struct {
 	Enabled *bool    `json:"enabled,omitempty"` // 缺省 true（system 通道零配置可用）
 	Command string   `json:"command,omitempty"` // 可选，配置后替代 system 通道（手机推送走这里）
-	Events  []string `json:"events,omitempty"`  // 可选，过滤 kind（run_end/repeat/budget），缺省全开
+	Events  []string `json:"events,omitempty"`  // 可选，按 notify.Kinds 过滤；缺省全开
 }
 
 // IsEnabled 返回告警是否启用（缺省 true）。
@@ -220,7 +221,7 @@ func (c *Config) ValidateBase() error {
 			return err
 		}
 		if !knownRoles[role] {
-			return fmt.Errorf("unknown role %q in roles config (valid: coordinator/architect/writer/editor): %w", role, errs.ErrConfig)
+			return fmt.Errorf("unknown role %q in roles config (valid: architect/writer/editor): %w", role, errs.ErrConfig)
 		}
 		if rc.Provider == "" || rc.Model == "" {
 			return fmt.Errorf("role %q must have both provider and model: %w", role, errs.ErrConfig)
@@ -260,15 +261,13 @@ func (c *Config) ValidateBase() error {
 		return err
 	}
 	for _, ev := range c.Notify.Events {
-		if !knownNotifyEvents[ev] {
-			return fmt.Errorf("unknown notify event %q (valid: run_end/repeat/budget): %w", ev, errs.ErrConfig)
+		if !notify.IsKnownKind(ev) {
+			return fmt.Errorf("unknown notify event %q (valid: %s): %w", ev, strings.Join(notify.Kinds(), "/"), errs.ErrConfig)
 		}
 	}
 
 	return nil
 }
-
-var knownNotifyEvents = map[string]bool{"run_end": true, "repeat": true, "budget": true}
 
 func validateProviderConfigText(name string, pc ProviderConfig) error {
 	fields := []struct {

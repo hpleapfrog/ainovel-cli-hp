@@ -12,8 +12,8 @@ import (
 	"github.com/voocel/ainovel-cli/internal/store"
 )
 
-// SavePausePointTool 登记/取消用户验收停靠点（仅 Coordinator 持有）。
-// 用户干预"只改某几章、未表达继续写"时，Coordinator 先调本工具再派 editor 入队；
+// SavePausePointTool 登记/取消用户验收停靠点，由 Engine 在干预动作边界调用。
+// 用户干预"只改某几章、未表达继续写"时，Arbiter 产生 pause + dispatch 裁定；
 // 重写队列排空后 Host 在流程边界消费停靠点并暂停等待验收（一次性）。
 // 停靠点是用户级运行意图，落 meta/run.json 而非创作事实层。
 type SavePausePointTool struct {

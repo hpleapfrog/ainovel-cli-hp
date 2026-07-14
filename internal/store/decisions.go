@@ -15,10 +15,6 @@ import (
 // 定位(docs/engine-arbiter.md §4.3):审计与离线重放的数据源——记录"当时看到什么
 // 事实、做了什么裁定",供 eval 回归与未来 Arbiter 的 A/B 对照。它**不是**事件溯源,
 // 也**不是**恢复数据源(恢复只依赖 Progress/Checkpoint/RunMeta 等事实层)。
-//
-// 现阶段(Coordinator 时代)记录 decider=coordinator 的观测:干预入口只有
-// (kind, input, facts),decision 留空——裁定混在长会话里不可结构化提取,先积累
-// facts+input 对照组;Arbiter 落地后同一 schema 补全 decision 字段。
 type DecisionStore struct{ io *IO }
 
 func NewDecisionStore(io *IO) *DecisionStore { return &DecisionStore{io: io} }
@@ -37,7 +33,7 @@ type DecisionRecord struct {
 	ID             string          `json:"id"`
 	At             string          `json:"at"`
 	Kind           string          `json:"kind"`    // intervention | plan_start | volume_end | ...
-	Decider        string          `json:"decider"` // coordinator(观测期) | arbiter | architect(卷末三选一)
+	Decider        string          `json:"decider"` // arbiter | architect（卷末评审）
 	CheckpointSeq  int64           `json:"checkpoint_seq,omitempty"`
 	Input          string          `json:"input,omitempty"`
 	InputTruncated bool            `json:"input_truncated,omitempty"`

@@ -1,7 +1,7 @@
 # 控制面演进:Engine + Arbiter(移除 Coordinator 长循环)
 
 > 状态(2026-07-12 v5):**代码实现完成**——Engine/Arbiter 已实施,Coordinator 及全部配套已删除(§十清单);端到端验证六条路径:写完整书 / 失败裁定 / 僵局裁定 / 返工验收(pause+editor 时序)/ pause-only 即停 / 退出竞态干预保全(internal/host/engine_test.go)。三轮外部评审的阻断项全部处置(含 feedback 事实闭环、PendingSteer 崩溃保护、lifecycle 竞态)。
-> **文档迁移已完成(2026-07-12)**:architecture.md 正文已全量重写为 Engine+Arbiter 现行架构(含新验证策略/目录/纪律);README、context-management、evaluation-system、observability、user-rules-runtime 的旧架构叙事已清理(仅保留标注的历史对照)。**剩余未完成**:bootstrap 仍静默接受 coordinator 角色配置(存量兼容,不再宣传);arbiter 独立角色配置未实现(固定 Default,过渡限制)。
+> **文档迁移已完成(2026-07-12)**:architecture.md 正文已全量重写为 Engine+Arbiter 现行架构(含新验证策略/目录/纪律);README、context-management、evaluation-system、observability、user-rules-runtime 的旧架构叙事已清理(仅保留标注的历史对照)。Coordinator 配置与会话兼容路径均已删除；Arbiter 当前刻意统一使用 Default 模型，不开放独立角色配置。
 > **设计语义澄清(第四/五轮评审)**:① writer feedback 的消费点**就是**下一次结构操作(expand_arc/append_volume/update_compass 经 novel_context 参考后清空)——它是"对后续大纲的建议"(commit schema 原文),不是即时调度信号;弧中途的严重偏离走 editor 评审与用户干预通道。非分层书无结构操作,**commit 不落盘其 feedback**(避免永久无消费者的垃圾事实;返回值镜像保留供诊断)。② rule_violations 已闭环:commit 双路径落盘(**best-effort 质量元数据**,与章节提交非同级强一致——恰在 pending_commit 清除后崩溃会缺一条记录,可接受)→ novel_context(chapter=N) 注入 → editor 按 §机械检查映射消费。③ PendingSteer 崩溃保护是 **best-effort 单在途持久化**:裁定期、动作应用失败、正常退出/Abort 全程受保护;两个明确不保证的窗口——(a) 派单转入内存执行队列(e.next)后、worker 启动前的硬杀进程(毫秒级窗口,defer 不执行);(b) interMu 等待中的并发干预(尚未写入槽位)。用户在场可感知,重发成本秒级,不为此建持久化 intent/FIFO。④ 启动裁定失败不是死局(2026-07-12 真实故障补课:provider 账号失效致 plan_start 失败,恢复路径全部走不通):StartPrompt(输入事实)改为在裁定**之前**落盘;plan_start 从未完成时,引擎 planStartFallback 依据它现场补裁——首次裁定的重试不违反"恢复不重做已有裁定";补裁失败显式暂停回显,失败裁定的审计记录带 error 字段(DecisionRecord.Error)。
 > 本文档保留为设计决策记录;当前架构见 README 架构节与 docs/engine-rfc.md。关联:docs/voice-layer.md(已实施)。
 
@@ -103,7 +103,7 @@ func DecideIntervention(ctx, model, facts, text) (InterventionDecision, error) /
 
 - **降级路径**:JSON 解析失败带错误重问一次;再失败——干预回显"未能理解"不产生写入,启动显式报错,failure/deadlock 按确定性兜底(终止并告警)
 - **干预记忆**:decisions.jsonl 兼任干预历史,`CollectInterventionFacts` 纳入最近 N 条裁定摘要
-- **模型**:v1 固定 Default(过渡限制——config 与 /model 白名单目前仅四角色);arbiter 转正式 role(白名单/failover/thinking)列为 RFC 前置小任务
+- **模型**:Arbiter 统一使用 Default，不暴露独立 role；只在出现明确的能力或成本需求时再扩展配置契约
 
 ### 4.3 审计(小而稳定;审计≠恢复源)
 

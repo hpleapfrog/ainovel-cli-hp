@@ -15,6 +15,7 @@ import (
 	"github.com/voocel/ainovel-cli/internal/arbiter"
 	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/flow"
+	"github.com/voocel/ainovel-cli/internal/notify"
 	storepkg "github.com/voocel/ainovel-cli/internal/store"
 	"github.com/voocel/ainovel-cli/internal/tools"
 )
@@ -58,7 +59,7 @@ type engine struct {
 }
 
 // deadlockConsultAt / deadlockAbortAt:repeats 达到前者问 Arbiter,达到后者硬熔断。
-// Coordinator 时代"不设阈值"依赖其自主性;确定性 Engine 必须有限界(RFC §5)。
+// 确定性 Engine 必须对无进展循环给出明确上界(RFC §5)。
 const (
 	deadlockConsultAt = 3
 	deadlockAbortAt   = 5
@@ -273,13 +274,13 @@ func (e *engine) retryPlanStart(ctx context.Context, prompt string) *flow.Instru
 		slog.Warn("启动补裁审计落盘失败", "module", "engine", "err", recErr)
 	}
 	if derr != nil {
-		e.pauseWithNotify("plan_start", "启动裁定失败,已暂停(请检查模型/网络配置后继续): "+truncate(derr.Error(), 200))
+		e.pauseWithNotify(notify.KindPlanStart, "启动裁定失败,已暂停(请检查模型/网络配置后继续): "+truncate(derr.Error(), 200))
 		return nil
 	}
 	if err := e.store.RunMeta.SetPlanStart(domain.PlanStartRecord{
 		RawPrompt: prompt, Planner: decision.Planner, PlannerTask: decision.Task, DecisionID: rec.ID,
 	}); err != nil {
-		e.pauseWithNotify("plan_start", "启动裁定无法落盘,已暂停: "+err.Error())
+		e.pauseWithNotify(notify.KindPlanStart, "启动裁定无法落盘,已暂停: "+err.Error())
 		return nil
 	}
 	e.emitEvent(Event{Time: time.Now(), Category: "SYSTEM", Level: "info",
@@ -346,7 +347,7 @@ func (e *engine) trackDeadlock(ctx context.Context, inst **flow.Instruction) (st
 		return false
 	}
 	if e.repeats >= deadlockAbortAt {
-		e.pauseWithNotify("deadlock", fmt.Sprintf("僵局熔断: 指令连续 %d 次无进展(%s),已暂停等待人工介入", e.repeats, in.Agent))
+		e.pauseWithNotify(notify.KindDeadlock, fmt.Sprintf("僵局熔断: 指令连续 %d 次无进展(%s),已暂停等待人工介入", e.repeats, in.Agent))
 		return true
 	}
 	// Arbiter 僵局咨询(repeats ∈ [consultAt, abortAt))。裁定 retry 不清零计数。
@@ -356,7 +357,7 @@ func (e *engine) trackDeadlock(ctx context.Context, inst **flow.Instruction) (st
 	})
 	e.recordFailureDecision("deadlock", in, facts, decision, err)
 	if err != nil {
-		e.pauseWithNotify("deadlock", "僵局裁定失败,已暂停等待人工介入: "+err.Error())
+		e.pauseWithNotify(notify.KindDeadlock, "僵局裁定失败,已暂停等待人工介入: "+err.Error())
 		return true
 	}
 	switch decision.Action {
@@ -366,7 +367,7 @@ func (e *engine) trackDeadlock(ctx context.Context, inst **flow.Instruction) (st
 		*inst = &flow.Instruction{Agent: decision.Dispatch.Agent, Task: decision.Dispatch.Task, Reason: decision.Reason}
 		return false
 	default: // abort
-		e.pauseWithNotify("deadlock", "僵局裁定: "+decision.Reason)
+		e.pauseWithNotify(notify.KindDeadlock, "僵局裁定: "+decision.Reason)
 		return true
 	}
 }
@@ -386,7 +387,7 @@ func (e *engine) runWorker(ctx context.Context, inst *flow.Instruction) error {
 		}
 	}
 
-	// 子代理进度中继:与 Coordinator 时代同一机制(ctx ToolProgress),observer 复用。
+	// Worker 进度经 ctx ToolProgress 中继到 observer。
 	runCtx := agentcore.WithToolProgress(ctx, func(p agentcore.ProgressPayload) {
 		e.observer.workerProgress(p)
 	})
@@ -409,7 +410,7 @@ func (e *engine) handleWorkerError(ctx context.Context, inst *flow.Instruction, 
 	// 确定性分类先行:参数/配置类错误是代码或配置 bug,重试必然同错,
 	// 送 Arbiter 也给不出出路——直接暂停等人工。
 	if isDeterministicWorkerError(werr) {
-		e.pauseWithNotify("worker_failure", "确定性错误(重试无意义),已暂停等待人工介入: "+truncate(msg, 200))
+		e.pauseWithNotify(notify.KindWorkerFailure, "确定性错误(重试无意义),已暂停等待人工介入: "+truncate(msg, 200))
 		return true
 	}
 
@@ -426,7 +427,7 @@ func (e *engine) handleWorkerError(ctx context.Context, inst *flow.Instruction, 
 	})
 	e.recordFailureDecision("worker_failure", inst, facts, decision, err)
 	if err != nil {
-		e.pauseWithNotify("worker_failure", "失败裁定不可用,已暂停等待人工介入: "+msg)
+		e.pauseWithNotify(notify.KindWorkerFailure, "失败裁定不可用,已暂停等待人工介入: "+msg)
 		return true
 	}
 	switch decision.Action {
@@ -438,7 +439,7 @@ func (e *engine) handleWorkerError(ctx context.Context, inst *flow.Instruction, 
 		e.mu.Unlock()
 		return false
 	default: // abort
-		e.pauseWithNotify("worker_failure", "失败裁定: "+decision.Reason)
+		e.pauseWithNotify(notify.KindWorkerFailure, "失败裁定: "+decision.Reason)
 		return true
 	}
 }

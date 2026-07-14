@@ -138,4 +138,4 @@
 - 短篇最重要的是集中与收束
 - 不要预埋大量未来再说的线
 - 不要把短篇写成”长篇开头”
-- 未被 Coordinator 限制时，按 premise → outline → characters → world_rules 顺序完成；`remaining` 非空时不要停。
+- 按 premise → outline → characters → world_rules 顺序完成；`remaining` 非空时不要停。

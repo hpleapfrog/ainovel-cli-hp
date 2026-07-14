@@ -45,7 +45,7 @@ type activeCall struct {
 	depth   int
 }
 
-// observer 订阅 coordinator 事件流并投影到 Host 的输出通道。
+// observer 把 Engine 派发与 Worker 进度投影到 Host 的输出通道。
 // 它是纯观察者,不参与任何控制决策。
 type observer struct {
 	emitEv  func(Event)
@@ -109,10 +109,10 @@ func newObserver(s *storepkg.Store, emitEv func(Event), emitD func(string), emit
 
 // ── Engine 直驱入口 ──
 //
-// Engine 直接运行 Worker 后,事件来源从"coordinator 事件流"变为两条:
+// Engine 直接运行 Worker，事件来源分为两条:
 //  1. dispatchStart/dispatchFinish —— Engine 在派发边界直接调用(DISPATCH 行)
-//  2. workerProgress —— Worker 的进度中继(ctx ToolProgress),与 Coordinator 时代
-//     同一 ProgressPayload 形态,复用 handleToolUpdate 的全部 worker 侧处理
+//  2. workerProgress —— Worker 的进度中继(ctx ToolProgress)，
+//     由 handleToolUpdate 统一处理 TOOL/流式正文/thinking/retry/context
 //     (TOOL 行/流式正文/thinking/retry/context)。
 
 // dispatchStart 记录一次 Worker 派发开始并发 DISPATCH 行。
@@ -176,7 +176,7 @@ func (o *observer) setAborting(v bool) { o.aborting.Store(v) }
 
 func (o *observer) retryEventID(scope string, attempt int) string {
 	if strings.TrimSpace(scope) == "" {
-		scope = "coordinator"
+		scope = "engine"
 	}
 	if o.retryEvents == nil {
 		o.retryEvents = make(map[string]string)

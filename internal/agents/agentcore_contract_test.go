@@ -196,7 +196,7 @@ func TestContract_SafetyStopReachesStopGuardWithReason(t *testing.T) {
 }
 
 // 契约 4：end_turn 时 InjectMessage 让模型获得新一轮且注入内容在场；
-// Escalate 立即终止，模型不再被调用。依赖方：Coordinator StopGuard 的
+// Escalate 立即终止，模型不再被调用。依赖方：Worker StopGuard 的
 // "物理不可停机 + 连续超限升级"。
 func TestContract_StopGuardInjectContinuesEscalateTerminates(t *testing.T) {
 	var sawInject atomic.Bool

@@ -44,7 +44,7 @@ func TestService_Build_DegradesButPersists(t *testing.T) {
 	}
 }
 
-func TestService_GetOrBuild_LazyForOldBook(t *testing.T) {
+func TestService_GetOrBuildInitializesMissingSnapshot(t *testing.T) {
 	svc, st := newDegradedService(t)
 
 	if cur, _ := st.UserRules.Load(); cur != nil {

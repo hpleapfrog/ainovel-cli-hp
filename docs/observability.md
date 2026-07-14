@@ -11,10 +11,11 @@
 ```
 1. /diag                       # 自动诊断，看 Findings 区
 2. cd output/{novel}/meta/     # 直接 cat 关键工件
-3. cat meta/sessions/coordinator.jsonl | tail  # 看最近几轮 LLM 行为
+3. tail decisions.jsonl                # 看最近 Arbiter 裁定
+4. ls -lt sessions/agents/             # 定位最近 Worker 会话后再 tail
 ```
 
-`/diag` 覆盖不到的事实（包括本文档列出的"待补诊断"项），需要 step 2-3 手工查。
+`/diag` 覆盖不到的事实（包括本文档列出的"待补诊断"项），需要 step 2-4 手工查。
 
 ### 报 issue：脱敏诊断导出
 

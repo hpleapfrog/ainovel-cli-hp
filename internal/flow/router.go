@@ -3,7 +3,8 @@
 // 设计原则：
 //   - Route 是纯函数：输入 State，输出 *Instruction。无 IO、无 Store 调用，可单测。
 //   - State 由 LoadState（非纯）从 Store 构造，一次性把路由需要的事实读齐。
-//   - 返回 nil 是合法的：表示"裁定场景，让 Coordinator LLM 自主决策"。
+//   - 返回 nil 是合法的：表示当前没有可由确定性事实推出的 Worker 指令；
+//     Engine 再按终态、启动补裁或等待用户干预处理。
 //
 // Router 覆盖的是"查表型"决策（每章下一步、弧末后处理、队列驱动），
 // 不覆盖"语义理解型"决策（选规划师、处理用户 Steer、输出总结）。
@@ -18,7 +19,7 @@ import (
 )
 
 // plannerForTier 从已落盘的规划级别推导规划师身份:short 归短篇规划师,
-// mid/long 归长篇规划师(与 coordinator 首次选型的口径一致)。
+// mid/long 归长篇规划师(与启动 Arbiter 的选型口径一致)。
 func plannerForTier(tier domain.PlanningTier) string {
 	if tier == domain.PlanningTierShort {
 		return "architect_short"
@@ -26,11 +27,11 @@ func plannerForTier(tier domain.PlanningTier) string {
 	return "architect_long"
 }
 
-// Instruction 指示 Host 下一步要求 Coordinator 调用的子代理与任务。
+// Instruction 指示 Engine 下一步直接运行的 Worker 与任务。
 type Instruction struct {
 	Agent   string // architect_long / architect_short / writer / editor
 	Task    string // 给子代理的任务描述
-	Reason  string // 给 Coordinator 看的理由（可选，方便调试与日志）
+	Reason  string // 路由理由（用于事件、日志与失败裁定）
 	Chapter int    // writer 任务涉及的章节号（续写/重写/打磨）；0 表示不涉及（editor/architect 任务）
 }
 
@@ -62,11 +63,11 @@ type State struct {
 	HasGlobalReview bool
 }
 
-// Route 根据事实返回下一步指令；返回 nil 表示让 Coordinator LLM 自主裁定。
+// Route 根据事实返回下一步确定性指令；返回 nil 由 Engine 按调用上下文处理。
 //
 // 决策优先级（互斥，自上而下匹配第一个）：
-//  1. Phase=Complete        → nil（LLM 输出总结）
-//  2. 规划期设定缺项且规划师可判定 → 同一规划师补齐；否则 nil（LLM 裁定首次选型）
+//  1. Phase=Complete        → nil（Host 确定性输出总结）
+//  2. 规划期设定缺项且规划师可判定 → 同一规划师补齐；否则 nil（Engine 启动补裁）
 //  3. PendingRewrites 非空  → writer 按队列重写/打磨
 //  4. Flow=Reviewing        → nil（dormant：当前无写入者，评审期 Flow 实为 writing）
 //  5. Flow=Steering         → nil（用户干预处理中）
@@ -83,14 +84,14 @@ func Route(s State) *Instruction {
 		return nil
 	}
 
-	// 1. 终态：让 LLM 输出总结
+	// 1. 终态：Host 根据 store 事实生成确定性总结
 	if p.Phase == domain.PhaseComplete {
 		return nil
 	}
 
 	// 2. 规划期补齐：查表型决策——缺什么在 store，规划师身份从已落盘的 scale 推导
 	//    （short → architect_short，其余 → architect_long）。tier 为空说明首次规划
-	//    尚未落盘任何设定（选型是语义判断），交 Coordinator 裁定。
+	//    尚未落盘任何设定（选型是语义判断），由 Engine 的 planStartFallback 补裁。
 	if p.Phase != domain.PhaseWriting {
 		if len(s.FoundationMissing) > 0 && s.PlanningTier != "" {
 			return &Instruction{
@@ -125,7 +126,7 @@ func Route(s State) *Instruction {
 		return nil
 	}
 
-	// 5. 用户干预处理中：Coordinator 正在裁定，Host 不抢占
+	// 5. 用户干预处理中：Arbiter 正在裁定，Engine 不抢占
 	if p.Flow == domain.FlowSteering {
 		return nil
 	}
@@ -191,13 +192,4 @@ func Route(s State) *Instruction {
 		Reason:  "续写下一章",
 		Chapter: next,
 	}
-}
-
-// FormatMessage 把 Instruction 格式化为发给 Coordinator 的用户消息。
-// 格式固定，便于 Coordinator prompt 识别与 LLM 直接响应。
-func FormatMessage(i *Instruction) string {
-	return fmt.Sprintf(
-		"[Host 下达指令]\n下一步：调用 subagent(%s, %q)\nagent: %s\ntask: %q\n理由：%s\n这是流程层的明确指令，请立即执行；subagent 的 agent/task 参数必须原样使用上面的 agent/task，不要改写 task，不要先调 novel_context，不要先输出推理。",
-		i.Agent, i.Task, i.Agent, i.Task, i.Reason,
-	)
 }

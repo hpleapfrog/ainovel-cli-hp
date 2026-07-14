@@ -394,7 +394,7 @@ output/novel/meta/simulation_profile.json
 }
 ```
 
-可配置的角色：`architect` / `writer` / `editor`（语义裁定 Arbiter 暂用 default 模型，独立角色配置为规划中的过渡限制）
+可配置的角色：`architect` / `writer` / `editor`。语义裁定 Arbiter 统一使用 default 模型，当前不开放独立角色配置。
 
 #### 自定义代理
 

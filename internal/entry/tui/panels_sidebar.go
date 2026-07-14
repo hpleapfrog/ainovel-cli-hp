@@ -476,7 +476,7 @@ func colorPercent(p float64) string {
 //	已启用     "WRITER        85%  · 323k / 394k"
 //	无 cache  显式"未启用"，不混进 0/0 干扰判读
 func renderCacheAgentLine(a host.AgentCacheStat, width int) string {
-	// role 名与"运行角色"区保持完全一致；Width 取 12 让最长的 COORDINATOR
+	// role 名与"运行角色"区保持完全一致；Width 取 12 让最长的 ARCHITECT
 	// 仍能保留 1 列尾随空格做分隔，其它 role 自动右侧填充。
 	roleStyle := lipgloss.NewStyle().Foreground(eventAgentColor(a.Role)).Width(12)
 	role := roleStyle.Render(agentDisplayName(a.Role))
@@ -719,8 +719,6 @@ func taskKindLabel(kind string) string {
 		return "下一卷规划"
 	case "steer_apply":
 		return "处理干预"
-	case "coordinator_decision":
-		return "协调推进"
 	default:
 		return kind
 	}

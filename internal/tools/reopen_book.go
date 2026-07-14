@@ -12,7 +12,7 @@ import (
 	"github.com/voocel/ainovel-cli/internal/store"
 )
 
-// ReopenBookTool 把已完结的书重新打开进入返工态（仅 Coordinator 持有）。
+// ReopenBookTool 把已完结的书重新打开进入返工态，由 Engine 在干预动作边界调用。
 // 完本后 completePhaseGate 硬拦一切 subagent 派发，用户无法返工已写章节。
 // 本工具不是 subagent，complete 期可调：它原子地把 phase 切回 writing、目标章入
 // PendingRewrites、flow=rewriting，随后 Flow Router 照既有返工队列派 writer 逐章重写，

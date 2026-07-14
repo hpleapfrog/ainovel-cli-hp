@@ -100,7 +100,7 @@ func New(cfg bootstrap.Config, bundle assets.Bundle) (*Host, error) {
 
 	usage := NewUsageTracker(models, store)
 	// 优先读 meta/usage.json；以下情况都走 sessions/*.jsonl 一次性回填：
-	//   - 文件不存在（首次升级到带持久化的版本）
+	//   - 文件不存在（首次持久化前）
 	//   - schema 版本不匹配（未来升级后丢弃旧格式）
 	//   - 文件存在但损坏 / IO 错误（不能让坏数据让累计永久归零）
 	// 回填完立即 SaveNow，把结果固化下来，下次启动直接 Load 命中。
@@ -160,7 +160,7 @@ func New(cfg bootstrap.Config, bundle assets.Bundle) (*Host, error) {
 		func(reason string) { h.abortWithEvent(reason, "error") },
 		func(level, summary string) {
 			h.emitEvent(Event{Time: time.Now(), Category: "SYSTEM", Summary: summary, Level: level})
-			h.notifier.Send(notify.Notification{Kind: "budget", Level: level, Title: "ainovel: 预算", Body: summary})
+			h.notifier.Send(notify.Notification{Kind: notify.KindBudget, Level: level, Title: "ainovel: 预算", Body: summary})
 		},
 	); sentinel != nil {
 		h.budget = sentinel
@@ -169,18 +169,18 @@ func New(cfg bootstrap.Config, bundle assets.Bundle) (*Host, error) {
 		usage.SetOnMissingUsage(func() {
 			const blind = "预算盲区: 模型未返回 usage 数据，成本统计为 0，预算上限不会触发（自定义模型请确认注册表价格或上游 include_usage）"
 			h.emitEvent(Event{Time: time.Now(), Category: "SYSTEM", Summary: blind, Level: "warn"})
-			h.notifier.Send(notify.Notification{Kind: "budget", Level: "warn", Title: "ainovel: 预算", Body: blind})
+			h.notifier.Send(notify.Notification{Kind: notify.KindBudget, Level: "warn", Title: "ainovel: 预算", Body: blind})
 		})
 	}
 	// 停靠点哨兵：执行用户预约的"重写完暂停"指令，事件+notify 成对（架构 §2.3）。
 	h.pauser = NewPausePointSentinel(store,
 		func(reason string) {
 			h.abortWithEvent(reason, "info")
-			h.notifier.Send(notify.Notification{Kind: "pause_point", Level: "info", Title: "ainovel: 验收停靠点", Body: reason})
+			h.notifier.Send(notify.Notification{Kind: notify.KindPausePoint, Level: "info", Title: "ainovel: 验收停靠点", Body: reason})
 		},
 		func(level, summary string) {
 			h.emitEvent(Event{Time: time.Now(), Category: "SYSTEM", Summary: summary, Level: level})
-			h.notifier.Send(notify.Notification{Kind: "pause_point", Level: level, Title: "ainovel: 验收停靠点", Body: summary})
+			h.notifier.Send(notify.Notification{Kind: notify.KindPausePoint, Level: level, Title: "ainovel: 验收停靠点", Body: summary})
 		},
 	)
 	// StopGuard 拦截浮出：blocked 是高频自愈动作，只进屏内事件流（推送会刷屏）；
@@ -190,11 +190,11 @@ func New(cfg bootstrap.Config, bundle assets.Bundle) (*Host, error) {
 		case "escalated":
 			body := fmt.Sprintf("%s 连续 %d 次空转未落盘必要产物，本轮任务终止，交回 Engine 处理", agent, n)
 			h.emitEvent(Event{Time: time.Now(), Category: "SYSTEM", Agent: agent, Summary: "StopGuard 升级: " + body, Level: "warn"})
-			h.notifier.Send(notify.Notification{Kind: "stop_guard", Level: "warn", Title: "ainovel: StopGuard", Body: body})
+			h.notifier.Send(notify.Notification{Kind: notify.KindStopGuard, Level: "warn", Title: "ainovel: StopGuard", Body: body})
 		case "hard_stop":
 			body := fmt.Sprintf("%s 遭 provider 拒答（safety/content_filter），本轮任务立即终止", agent)
 			h.emitEvent(Event{Time: time.Now(), Category: "SYSTEM", Agent: agent, Summary: "StopGuard 升级: " + body, Level: "warn"})
-			h.notifier.Send(notify.Notification{Kind: "stop_guard", Level: "warn", Title: "ainovel: StopGuard", Body: body})
+			h.notifier.Send(notify.Notification{Kind: notify.KindStopGuard, Level: "warn", Title: "ainovel: StopGuard", Body: body})
 		default: // blocked
 			h.emitEvent(Event{Time: time.Now(), Category: "SYSTEM", Agent: agent,
 				Summary: fmt.Sprintf("StopGuard: %s 未完成必要产物就试图结束，已拦截催促（连续第 %d 次）", agent, n), Level: "info"})
@@ -232,7 +232,7 @@ func New(cfg bootstrap.Config, bundle assets.Bundle) (*Host, error) {
 
 // ── 生命周期 ──
 
-// PrepareUserRules 在新建模式下生成本书用户规则快照（启动侧确定性，不经 Coordinator、不进主创作 Run）。
+// PrepareUserRules 在新建模式下生成本书用户规则快照（启动侧确定性，不进主创作 Run）。
 //
 // 入参是用户的**原始**创作要求（未经 BuildStartPrompt 包装）——归一化要的是用户规则本身，
 // 不是启动脚手架。入口须在 StartPrepared 之前调用一次（quick/cocreate 两条新建路径都走这里）。
@@ -249,8 +249,8 @@ func (h *Host) PrepareUserRules(rawPrompt string) error {
 	return nil
 }
 
-// ensureUserRules 惰性确保快照存在（老书无快照时按 system_defaults + rules 文件生成）。
-// 恢复路径调用，让老书也能拿到 rules 文件的归一化结果。
+// ensureUserRules 在恢复路径确保快照存在；缺失时按
+// system_defaults + rules 文件生成。
 func (h *Host) ensureUserRules() {
 	svc := userrules.NewService(h.store, h.models.Default, rules.DefaultOptions())
 	snap, err := svc.GetOrBuild(context.Background())
@@ -280,7 +280,7 @@ func logUserRulesSnapshot(snap *rules.Snapshot) {
 }
 
 // StartPrepared 用用户的**原始**创作要求开始创作:plan_start 裁定选规划师并扩充
-// 需求(原 coordinator 启动裁定 + BuildStartPrompt 脚手架的职责),裁定结果先固化为
+// 需求，裁定结果先固化为
 // 事实(PlanStartRecord)再启动 Engine——恢复永远依赖已落盘事实,不重做已有裁定。
 // 输入事实(StartPrompt)在裁定之前落盘:裁定失败时它是引擎补裁的依据,
 // 启动失败可从任何恢复入口(Resume/继续)自愈,不是死局。
@@ -392,7 +392,7 @@ func (h *Host) Resume() (string, error) {
 		slog.Warn("一致性告警", "module", "host", "detail", w)
 		h.emitEvent(Event{Time: time.Now(), Category: "SYSTEM", Summary: "一致性告警: " + w, Level: "warn"})
 	}
-	// 老书无快照时惰性生成（按 system_defaults + rules 文件归一化）；已有则廉价读取。
+	// 确保用户规则快照存在；已有则廉价读取。
 	h.ensureUserRules()
 	h.refreshWriterRestore()
 	// 停靠点对账：崩溃恰在"排空后、消费前"时，用户手动 Resume 即视为放行。
@@ -630,7 +630,7 @@ func (h *Host) runEnded() {
 		slog.Info(summary, "module", "host")
 		h.emitEvent(Event{Time: time.Now(), Category: "SYSTEM", Summary: summary, Level: "success"})
 		h.notifier.Send(notify.Notification{
-			Kind: "run_end", Level: "info", Title: "ainovel: 创作完成",
+			Kind: notify.KindRunEnd, Level: "info", Title: "ainovel: 创作完成",
 			Body: h.runEndBody(progress.NovelName, summary),
 		})
 	} else {
@@ -650,7 +650,7 @@ func (h *Host) runEnded() {
 			slog.Warn(summary, "module", "host")
 			h.emitEvent(Event{Time: time.Now(), Category: "SYSTEM", Summary: summary, Level: "warn"})
 			h.notifier.Send(notify.Notification{
-				Kind: "run_end", Level: "warn", Title: "ainovel: 创作停止",
+				Kind: notify.KindRunEnd, Level: "warn", Title: "ainovel: 创作停止",
 				Body: h.runEndBody(name, summary),
 			})
 		}
@@ -860,7 +860,7 @@ func (h *Host) Snapshot() UISnapshot {
 }
 
 // fillContextStatus 填充上下文健康度信息。
-// Coordinator 退役后主循环无常驻上下文;Worker 的上下文健康度经进度中继
+// 主循环无常驻 LLM 上下文；Worker 的上下文健康度经进度中继
 // (ProgressContext)进入 observer 的 per-agent 快照,由 Agents 面板展示。
 // 汇总字段留空,面板按 per-agent 数据渲染。
 func (h *Host) fillContextStatus(_ *UISnapshot) {}
@@ -1175,13 +1175,13 @@ func (h *Host) StageCoCreateStream(ctx context.Context, history []CoCreateMessag
 	return coCreateStream(ctx, h.models, h.store.Sessions, stageSystemPrompt(h.store), history, onProgress)
 }
 
-// stagePlanPrefix 把共创产出的"后续方向 brief"包装成一条阶段规划干预，交 Coordinator 裁定。
+// stagePlanPrefix 把共创产出的"后续方向 brief"包装成一条阶段规划干预，交 Arbiter 裁定。
 // 只贴 [阶段规划] 事实标记 + 中性陈述，不写死"怎么落地"——具体路由（compass / architect /
-// save_user_rules）交给 coordinator.md 的「阶段规划」判据，避免与 prompt 形成第二真相源、
+// user_rules）交给 arbiter-intervention.md 的「阶段规划」判据，避免与 prompt 形成第二真相源、
 // 也不堵死风格类要求走 user_rules（守"分类裁定归 LLM"）。Continue 再叠加 [用户干预] 前缀。
 const stagePlanPrefix = "[阶段规划] 我暂停创作，和共创助手一起梳理了下面的后续方向，请按你的干预分类裁定如何落地，然后继续创作。后续方向如下：\n\n"
 
-// PauseForCoCreate 进入阶段共创：置共创占用标记，运行中则一并暂停 coordinator。
+// PauseForCoCreate 进入阶段共创：置共创占用标记，运行中则一并暂停 Engine。
 // 返回 false 表示无法进入（全书已完成或已在共创中），调用方忽略即可。
 // 占用标记在共创窗口内堵住 import/simulate/start/resume/continue 的并发介入——
 // 运行中暂停后 lifecycle=paused，现有 ==running 互斥失效，靠该标记补缺；
@@ -1262,7 +1262,7 @@ func truncate(s string, maxRunes int) string {
 }
 
 // ImportFrom 启动一次外部小说反推导入：切分 → 反推 foundation → 逐章分析落盘。
-// 与 Coordinator 互斥；导入完成后调用方可立即 Resume() 续写。
+// 与 Engine 运行互斥；导入完成后调用方可立即 Resume() 续写。
 // 返回的事件通道由 imp.Run 关闭，调用方负责消费（满则丢弃以防阻塞分析协程）。
 func (h *Host) ImportFrom(ctx context.Context, opts imp.Options) (<-chan imp.Event, error) {
 	if err := h.guardExclusive("导入"); err != nil {
@@ -1310,14 +1310,14 @@ func (h *Host) ImportSimulationProfile(ctx context.Context, path string) (<-chan
 	return sim.RunImport(ctx, h.store, path)
 }
 
-// guardExclusive 检查独占占用：coordinator 运行中或阶段共创窗口内时拒绝会改写状态的入口
+// guardExclusive 检查独占占用：Engine 运行中或阶段共创窗口内时拒绝会改写状态的入口
 // （import/simulate）。补上 paused 期间只查 ==running 的并发缺口。
 func (h *Host) guardExclusive(action string) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	switch {
 	case h.lifecycle == lifecycleRunning:
-		return fmt.Errorf("coordinator 运行中，请先暂停后再%s", action)
+		return fmt.Errorf("创作引擎运行中，请先暂停后再%s", action)
 	case h.cocreating:
 		return fmt.Errorf("阶段共创进行中，请先结束共创后再%s", action)
 	}
@@ -1327,7 +1327,7 @@ func (h *Host) guardExclusive(action string) error {
 // Export 导出已完成章节为外部文件（当前仅支持 TXT）。
 //
 // 与 ImportFrom 不同：导出是只读操作（不动 Progress / Checkpoint），
-// 因此**不要求 Coordinator 空闲**——写作中途也可以随时导出"现阶段成品"。
+// 因此**不要求 Engine 停机**——写作中途也可以随时导出"现阶段成品"。
 // 只读到 Progress.CompletedChapters + 章节终稿 + 大纲 + premise 的一致快照。
 func (h *Host) Export(ctx context.Context, opts exp.Options) (*exp.Result, error) {
 	return exp.Run(ctx, exp.Deps{Store: h.store}, opts)

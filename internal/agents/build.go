@@ -39,16 +39,16 @@ func promptCacheBase(bookDir string) string {
 	return "nvl-" + hex.EncodeToString(sum[:6])
 }
 
-// subagentMaxRetries 给所有 SubAgentConfig 与 Coordinator 统一的 LLM retry 上限。
+// subagentMaxRetries 是所有 Worker 的 LLM retry 上限。
 // 退避策略：指数退避（受 maxDelay 上限约束），优先服从 server Retry-After。
 // 配合 ToolsAreIdempotent=true 让 stream-idle / 503 / 短暂网络抖动这类 retryable
-// 错误能在 subagent 层就近重试，而不是把整个 subagent 抛回 coordinator 重派发。
+// 错误能在 Worker 层就近重试，而不是让 Engine 重跑整个任务。
 // 项目铁律一保证写类工具走 checkpoint+digest 幂等，重试是安全的。
 const subagentMaxRetries = 7
 
-// UsageRecorder 是 BuildCoordinator 可选的用量回调；签名与 OnMessage 一致，
+// UsageRecorder 是 BuildWorkers 可选的用量回调；签名与 OnMessage 一致，
 // 每条 agent 消息都会调一次，由 Host 层负责聚合。task 是本次 spawn 的任务文本
-// （coordinator 无 spawn，恒为空），作为会话身份供缓存链断裂检测按会话重置基线。
+// 作为会话身份，供缓存链断裂检测按会话重置基线。
 // nil 表示不追踪。
 type UsageRecorder func(agentName, task string, msg agentcore.AgentMessage)
 

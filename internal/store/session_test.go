@@ -86,7 +86,7 @@ func TestSessionStore_MetaModelSwitch(t *testing.T) {
 }
 
 // TestSessionStore_NilLookup 验证 lookup=nil 时写入仍然正常，
-// 只是不带 _meta，保持向后兼容。
+// 只是不带 _meta。
 func TestSessionStore_NilLookup(t *testing.T) {
 	dir := t.TempDir()
 	s := NewSessionStore(newIO(dir))

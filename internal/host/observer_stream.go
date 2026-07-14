@@ -118,12 +118,11 @@ func (o *observer) resetStreamArgLabel(agent, tool string) {
 }
 
 // emitFallbackStreamHeader 给未配置 extractor 的工具补一行 ✻ 标题到流面板。
-// 三条路径都要调用以保证一致：
+// 两条路径都要调用以保证一致：
 //  1. ensureSubagentToolStarted —— subagent 流式 tool args（DeltaToolCall）
 //  2. handleToolUpdate ProgressToolStart —— subagent 非流式 tool args
-//  3. handleToolStart —— coordinator 自身工具
 //
-// 缺任何一条，同一个工具就会"writer 调有 ✻、coordinator 调没 ✻"或反过来。
+// 缺任何一条，流式与非流式模型的工具标题就会表现不一致。
 func (o *observer) emitFallbackStreamHeader(tool string) {
 	if _, has := toolDisplays[tool]; has {
 		return // 有 extractor，header 由 extractor 自行输出

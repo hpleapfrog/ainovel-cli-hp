@@ -36,9 +36,9 @@ Architect / Writer / Editor / commit 检查共用
 
 代码落点：`internal/rules`（纯数据 + 确定性合并：snapshot.go / raw.go / types.go）、`internal/userrules`
 （LLM 归一化 + 编排 + 落盘：normalize.go / service.go）、`internal/store/user_rules.go`（快照存储）、
-`internal/tools/save_user_rules.go`（运行中工具壳）、`assets/prompts/coordinator.md`（三类分流）。
+`internal/userrules/service.go`（运行中规则落盘）、`assets/prompts/arbiter-intervention.md`（三类分流）。
 系统默认机械基线已从 `assets/rules/default.md` 迁入代码内置 `rules.SystemDefaults()`，YAML 解析路径与
-yaml.v3 依赖已删除。**未验**：真实 LLM 开书 / 运行中 `save_user_rules` 全链路（normalizer 离线原型已验 10/10）。
+yaml.v3 依赖已删除。**未验**：真实 LLM 开书 / 运行中 Arbiter rules 动作全链路（normalizer 离线原型已验 10/10）。
 
 ## 为什么
 
@@ -97,7 +97,7 @@ output/novel/meta/user_rules.json
 1. **启动 prompt**：用户开书时写的长期要求。
 2. **用户 rules 文件**：全局或项目级长期偏好，按普通自然语言读取。
 3. **系统默认规则**：代码内置的机械基线。
-4. **运行中长期要求**：用户中途说“以后都怎样”，经 `save_user_rules` 进入。
+4. **运行中长期要求**：用户中途说“以后都怎样”，Arbiter 提取 `rules` 动作，Host 调用 `AddRuntimeRule`。
 
 这些输入源不直接进入 Writer prompt，也不在运行时被反复读取。它们只在生成或更新快照时参与归一化，结果合并进 `meta/user_rules.json`。
 
@@ -193,7 +193,8 @@ LLM 侧职责：
 - **能落盘就继续**：只要 `meta/user_rules.json` 能写入，主创作必须继续。
 - **只有落盘失败才中止**：快照无法写入磁盘时才中止，因为后续运行没有稳定事实源。
 
-`save_user_rules` 工具契约（运行中）：永远尽量返回规则事实；normalizer 失败时保存 degraded 快照、返回 `status=degraded`，**不把技术错误当作 tool error 上抛**（否则 JSON/schema/网络错误会污染主流程，本项目历史上这类污染引发过死循环）；只有落盘失败这类无法继续的问题才返回 error。（该工具壳现已随 Coordinator 退役,契约由 `AddRuntimeRule` 直调继承。）
+`AddRuntimeRule` 契约（运行中）：normalizer 失败时保存 degraded 快照，
+不把 JSON/schema/网络等归一化错误注入创作流程；只有落盘失败才返回 error。
 
 ## 系统默认规则
 
@@ -284,27 +285,15 @@ working_memory.user_rules
 
 Writer 不重新理解原始启动 prompt，也不读原始 rules 文件。
 
-## 干预分类：三类去向（save_directive 已废弃）
+## 干预分类：三类去向
 
-长期写作要求统一走 `save_user_rules`，不再有独立的 `save_directive` 通道。运行中干预按"要改什么"分三类：
+运行中干预按"要改什么"分三类：
 
-- **怎么写**（写作笔法 / 风格 / 质量：字数、用词、禁语、句式、对话占比、标题格式等）→ `save_user_rules`，归一化合并进 `meta/user_rules.json`。例：“每章 1500 字”“标题只用中文”“主角整体冷静克制”“对话占比高一点”。
+- **怎么写**（写作笔法 / 风格 / 质量：字数、用词、禁语、句式、对话占比、标题格式等）→ Arbiter `rules` 动作，归一化合并进 `meta/user_rules.json`。例：“每章 1500 字”“标题只用中文”“主角整体冷静克制”“对话占比高一点”。
 - **写什么**（剧情 / 结构 / 人物走向 / 篇幅）→ architect，落进 compass / outline / 角色档案。例：“这一卷多写战斗线”“从第 30 章起主角语气转冷”“增加到 40 章”。
 - **改已写的**（重写 / 修订指定章节）→ editor，入队 PendingRewrites。
 
-判据：**“怎么写” → save_user_rules；“写什么” → architect；“改已写的” → editor**。
-
-> 早期曾有 `save_directive`（带 `at_chapter` 进度锚点）与 `save_user_rules` 并存。实践发现两者在自由文本偏好上重叠，而“带不带进度锚点”是道模糊分类题（多数运行中要求天然都是“从现在起”），徒增分类负担并曾引路由问题。真正绑定剧情进度的需求本就该由 architect 承载，故 2026-06-28 砍掉 `save_directive`。这是有意的 breaking change：老书遗留的 `meta/user_directives.json` 不再读取、不迁移，书仍可恢复续写，但旧 directive 里的历史偏好不会继续生效。
-
-## 老书处理
-
-老书如果没有 `meta/user_rules.json`：
-
-1. 首次启动时用现有启动 prompt、用户 rules 文件和系统默认规则惰性生成快照。
-2. 保存到 `meta/user_rules.json`。
-3. 打印启动回显，明确快照来源。
-
-之后运行时只读快照，不再因为外部 rules 文件变化而漂移。旧版 `meta/user_directives.json` 被忽略；需要保留的历史要求应由用户重新输入，走 `save_user_rules` 写入新快照。
+判据：**“怎么写” → rules；“写什么” → architect；“改已写的” → editor**。
 
 ## 实施步骤
 
@@ -314,9 +303,8 @@ Writer 不重新理解原始启动 prompt，也不读原始 rules 文件。
 4. 把归一化 / 合并 / 落盘收敛成一套逻辑，两个调用方共用：启动侧直接调用生成初始快照；运行中由干预裁定的 `rules` 动作经 `AddRuntimeRule` 复用。失败时按 §失败与降级 处理：来源降级为 raw preferences、快照 `status=degraded`、主创作继续。
 5. 把当前 `assets/rules/default.md` 的系统默认机械规则迁到代码内置结构或 JSON asset，保留阈值来源注释；删除用户 rules 的 YAML 解析路径，不做兼容层。
 6. rules 文件读取后不再直接把正文当 prompt 注入，而是归一化后合并进 `user_rules` 快照。
-7. 无快照的老书首次启动时惰性生成快照，并回显来源。
-8. `novel_context` 只注入 `meta/user_rules.json` 中的 `working_memory.user_rules`。
-9. `commit_chapter` 使用同一份 `user_rules.structured` 检查。
+7. `novel_context` 只注入 `meta/user_rules.json` 中的 `working_memory.user_rules`。
+8. `commit_chapter` 使用同一份 `user_rules.structured` 检查。
 10. 干预分诊（现由 Arbiter 承担,arbiter-intervention.md）明确按"要改什么"三类分流：写作风格 / 质量类长期要求走 `rules` 动作落快照；剧情 / 结构 / 人物 / 篇幅走 architect；已写章节返工走 editor（详见 §干预分类：三类去向）。
 
 ## 验收标准
@@ -330,7 +318,7 @@ Writer 不重新理解原始启动 prompt，也不读原始 rules 文件。
 - 模糊规则不会被提升为 error 级 `structured` 字段。
 - 系统默认规则不经 LLM，直接进 Go 合并。
 - 来源优先级与字段覆盖由 Go 确定性执行，相同输入产出相同快照。
-- 运行中用户说“以后都怎样”，经 `save_user_rules` 合并进快照，后续章节的 `novel_context` 能看到更新。
+- 运行中用户说“以后都怎样”，经 Arbiter rules 动作合并进快照，后续章节的 `novel_context` 能看到更新。
 - 归一化失败不阻断写书：失败来源降级为 raw preferences，快照 `status=degraded`，主创作继续；只有快照无法落盘才中止。
 - 归一化失败返回 `status=degraded`，不把技术错误上抛污染主流程。
 - 生成或更新快照后会回显 `structured` / `preferences` / 未提升项；降级时回显说明降级来源。

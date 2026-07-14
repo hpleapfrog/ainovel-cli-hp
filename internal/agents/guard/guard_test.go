@@ -26,9 +26,8 @@ func newTestStore(t *testing.T) *store.Store {
 //
 // 历史背景：实测 hy3-preview:free 写第 2 章时连续 8 次 stop_reason='safety'
 // 拒答；旧逻辑反复注入"必须 commit"，模型继续 safety，攒到 3 次 block 才 escalate，
-// 之后 coordinator 又重派 writer 总共 3 次。每次重派都是新的 SubAgent → 缓存
-// 前缀全部冷启动。修复后第一次 safety 立即 escalate，coordinator 从 LLM
-// 错误消息看到不可恢复，倾向于换路径而不是重派。
+// 之后 Engine 又重跑 writer 总共 3 次。每次都是新的 SubAgent → 缓存
+// 前缀全部冷启动。修复后第一次 safety 立即 escalate，Engine 可直接按不可恢复错误暂停。
 //
 // 注意只测 safety / content_filter：StopReasonError / StopReasonAborted 走
 // agentcore loop.go 直接终止 run 的分支，根本不会调用 StopGuard，列进来反而
@@ -80,7 +79,7 @@ func TestSubAgentGuard_NormalStopStillBlocks(t *testing.T) {
 
 // TestSubAgentGuard_ProgressBetweenBlocksResetsCounter 验证：两次拦截之间出现过
 // 新 checkpoint（模型被催后重新 draft 等）时 consecutive 重置——升级只惩罚毫无
-// 产物的连续空转，与 Coordinator StopGuard 的"有进展即重置"语义对齐（issue #75）。
+// 产物的连续空转，遵循"有进展即重置"语义（issue #75）。
 func TestSubAgentGuard_ProgressBetweenBlocksResetsCounter(t *testing.T) {
 	s := newTestStore(t)
 	guard := NewWriterStopGuard(s, nil)

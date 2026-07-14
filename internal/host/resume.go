@@ -22,7 +22,7 @@ func resumeLabel(store *storepkg.Store) (string, error) {
 	return describeResume(store, progress), nil
 }
 
-// describeResume 生成人类可读的恢复标签；不影响 Coordinator 的行为。
+// describeResume 生成人类可读的恢复标签；不影响 Engine 路由。
 // 所有执行路由由 Flow Router 按事实推导；这里仅面向 UI 的 "恢复：xxx"。
 func describeResume(store *storepkg.Store, progress *domain.Progress) string {
 	switch progress.Phase {

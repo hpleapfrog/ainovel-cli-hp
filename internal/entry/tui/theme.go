@@ -72,7 +72,6 @@ var statusDisplay = map[string]struct {
 var categoryColors = map[string]lipgloss.AdaptiveColor{
 	"DISPATCH": colorAccent,
 	"DECISION": colorContext,
-	"DONE":     colorSuccess,
 	"TOOL":     colorTool,
 	"SYSTEM":   colorAccent,
 	"USER":     colorAccent2,

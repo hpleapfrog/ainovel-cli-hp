@@ -229,7 +229,7 @@ Engine ── Execute({agent, task}) ──▶ architect_short/long · writer ·
                                         Store（协作媒介，Worker 之间不直接通信）
 ```
 
-`bootstrap.ModelSet` 支持角色级模型：architect/writer/editor 各自独立配置 + provider failover。Writer 跑 Sonnet 而不是 Opus 在 200 章长篇上能省一个数量级成本。Arbiter 暂用 Default 模型（过渡限制，经 usageTrackedModel 计费）。
+`bootstrap.ModelSet` 支持角色级模型：architect/writer/editor 各自独立配置 + provider failover。Writer 跑 Sonnet 而不是 Opus 在 200 章长篇上能省一个数量级成本。Arbiter 统一使用 Default 模型（经 usageTrackedModel 计费），当前不开放独立角色配置。
 
 ### 6.2 三类协作模式
 

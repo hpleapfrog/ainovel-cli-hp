@@ -286,7 +286,7 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 	}
 
 	// 返回剩余未完成项，引导 Architect 继续或结束；
-	// 齐全时一次性把 phase 推进到 writing，避免 Coordinator 再回来派单。
+	// 齐全时一次性把 phase 推进到 writing，下一 Engine 轮次可直接进入写作。
 	remaining := t.store.FoundationMissing()
 	ready := len(remaining) == 0
 	result["remaining"] = remaining

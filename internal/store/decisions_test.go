@@ -13,7 +13,7 @@ func TestDecisionStore_AppendAndRecent(t *testing.T) {
 	}
 
 	first, err := s.Decisions.Append(DecisionRecord{
-		Kind: "intervention", Decider: "coordinator",
+		Kind: "intervention", Decider: "arbiter",
 		Input: "重写第3章", Facts: json.RawMessage(`{"phase":"writing"}`),
 	})
 	if err != nil {
@@ -23,7 +23,7 @@ func TestDecisionStore_AppendAndRecent(t *testing.T) {
 		t.Fatalf("Append 应补齐 ID/At/SchemaVersion: %+v", first)
 	}
 
-	if _, err := s.Decisions.Append(DecisionRecord{Kind: "intervention", Decider: "coordinator", Input: "继续写"}); err != nil {
+	if _, err := s.Decisions.Append(DecisionRecord{Kind: "intervention", Decider: "arbiter", Input: "继续写"}); err != nil {
 		t.Fatalf("append 2: %v", err)
 	}
 	// 失败裁定:error 是审计事实,必须原样落盘并可读回。
@@ -58,7 +58,7 @@ func TestDecisionStore_InputTruncation(t *testing.T) {
 		t.Fatalf("init: %v", err)
 	}
 	huge := strings.Repeat("长", maxDecisionInputBytes) // 3 字节/字,远超上限
-	rec, err := s.Decisions.Append(DecisionRecord{Kind: "intervention", Decider: "coordinator", Input: huge})
+	rec, err := s.Decisions.Append(DecisionRecord{Kind: "intervention", Decider: "arbiter", Input: huge})
 	if err != nil {
 		t.Fatalf("append: %v", err)
 	}
@@ -77,7 +77,7 @@ func TestDecisionStore_RecentSkipsCorruptLines(t *testing.T) {
 	if err := s.Init(); err != nil {
 		t.Fatalf("init: %v", err)
 	}
-	if _, err := s.Decisions.Append(DecisionRecord{Kind: "intervention", Decider: "coordinator", Input: "好的"}); err != nil {
+	if _, err := s.Decisions.Append(DecisionRecord{Kind: "intervention", Decider: "arbiter", Input: "好的"}); err != nil {
 		t.Fatalf("append: %v", err)
 	}
 	// 模拟崩溃留下的尾部残行
