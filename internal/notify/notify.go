@@ -28,7 +28,7 @@ type Notification struct {
 const (
 	KindRunEnd        = "run_end"
 	KindBudget        = "budget"
-	KindPausePoint    = "pause_point"
+	KindAdvanceGate   = "advance_gate"
 	KindStopGuard     = "stop_guard"
 	KindPlanStart     = "plan_start"
 	KindDeadlock      = "deadlock"
@@ -41,7 +41,7 @@ func Kinds() []string {
 	return []string{
 		KindRunEnd,
 		KindBudget,
-		KindPausePoint,
+		KindAdvanceGate,
 		KindStopGuard,
 		KindPlanStart,
 		KindDeadlock,

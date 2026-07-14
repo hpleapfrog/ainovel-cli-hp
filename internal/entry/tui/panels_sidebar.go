@@ -26,6 +26,15 @@ func renderStateContent(snap host.UISnapshot, contentW int) string {
 	overview.WriteString(renderField("运行态", snapshotRuntimeStateLabel(snap.RuntimeState)))
 	overview.WriteString(renderField("阶段", snapshotPhaseLabel(snap.Phase)))
 	overview.WriteString(renderField("流程", snapshotFlowLabel(snap.Flow)))
+	if snap.AdvanceMode == "review" {
+		advance := "逐章验收"
+		if snap.AdvancePermitChapter > 0 {
+			advance = fmt.Sprintf("已放行第 %d 章", snap.AdvancePermitChapter)
+		}
+		overview.WriteString(renderField("推进", advance))
+	} else if snap.AdvanceMode == "auto" {
+		overview.WriteString(renderField("推进", "自动"))
+	}
 	if snap.Layered {
 		overview.WriteString(renderField("已完成", fmt.Sprintf("%d 章", snap.CompletedCount)))
 		// 分层动态规划：右栏只展示当前弧已展开的章节，"已规划"也用同一个口径，
@@ -80,6 +89,10 @@ func renderStateContent(snap host.UISnapshot, contentW int) string {
 	if snap.PendingSteer != "" {
 		sections = append(sections, renderSidebarSection("干预",
 			renderHighlightField("待处理", truncate(snap.PendingSteer, contentW-10)), contentW))
+	}
+	if snap.HasAdvanceHold {
+		sections = append(sections, renderSidebarSection("验收停靠",
+			renderHighlightField("等待", truncate(snap.AdvanceHoldReason, contentW-10)), contentW))
 	}
 
 	if body := renderUsageSidebar(snap, contentW); body != "" {
@@ -222,6 +235,9 @@ func snapshotHeadline(snap host.UISnapshot) string {
 			return "待恢复：返工处理"
 		}
 		return "等待返工处理"
+	}
+	if snap.AdvanceMode == "review" && !snap.IsRunning && snap.Phase == "writing" {
+		return "逐章验收：等待放行下一章"
 	}
 	return ""
 }

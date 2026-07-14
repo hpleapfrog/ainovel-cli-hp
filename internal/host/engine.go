@@ -38,7 +38,7 @@ type engine struct {
 
 	observer  *observer
 	budget    *BudgetSentinel
-	pauser    *PausePointSentinel
+	gate      *ChapterAdvanceGate
 	refresh   func() // 每次 writer 派发前刷新 RestorePack
 	emitEvent func(Event)
 	notify    func(kind, level, title, body string)
@@ -50,6 +50,9 @@ type engine struct {
 	running bool
 	pending []controlOp       // 干预的控制态动作,边界提交
 	next    *flow.Instruction // 下一轮优先执行的指令(plan_start / arbiter dispatch)
+	// deferGateForNext 只与 next 同生共灭：hold+dispatch 必须先运行配对的
+	// editor/writer，让它建立返工队列，随后 Gate 才能判断 rewrites_drained。
+	deferGateForNext bool
 
 	// 僵局追踪:上一轮执行后 Route 仍产生同一指令键即累计。
 	// Router 指令是任务后置条件的投影；真正完成会让下一指令改变。
@@ -69,7 +72,7 @@ const (
 // controlOp 是干预裁定中修改控制状态的动作(边界提交;RFC §3)。
 // text/facts 保留原始咨询上下文:dispatch 对账失败时以新事实重询。
 type controlOp struct {
-	pause    *arbiter.PauseOp
+	hold     *arbiter.AdvanceHoldOp
 	reopen   *arbiter.ReopenOp
 	dispatch *arbiter.DispatchOp
 	text     string
@@ -92,6 +95,7 @@ func (e *engine) start(initial *flow.Instruction) bool {
 	// 与用户意图相反。
 	if initial != nil {
 		e.next = initial
+		e.deferGateForNext = false
 	}
 	e.lastKey, e.repeats, e.failedKey = "", 0, ""
 	go e.run(ctx)
@@ -135,7 +139,7 @@ func (e *engine) run(ctx context.Context) {
 		e.pending = nil
 		e.mu.Unlock()
 		// 退出竞态:enqueue 与退出并发时残留的干预动作不得无声丢弃——
-		// pause/reopen 是幂等的事实写入,用独立 ctx 补执行;dispatch 无引擎可派,
+		// hold/reopen 是幂等的事实写入,用独立 ctx 补执行;dispatch 无引擎可派,
 		// 恢复 PendingSteer 持久化(host 可能已按"入队成功"清除),下次
 		// Resume/Continue 重放整条干预。
 		for _, op := range leftover {
@@ -149,7 +153,7 @@ func (e *engine) run(ctx context.Context) {
 					Summary: "引擎已停,裁定派单未执行;干预已保留,继续创作时自动重新裁定"})
 				op.dispatch = nil
 			}
-			if op.pause != nil || op.reopen != nil {
+			if op.hold != nil || op.reopen != nil {
 				_ = e.applyControlOp(context.Background(), op)
 			}
 		}
@@ -160,12 +164,11 @@ func (e *engine) run(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		// 控制态提交在循环顶部(派发之前):pause+dispatch 组合里的派单(如 editor
-		// 入队)必须先于哨兵消费执行——否则停靠点会在返工队列建立前被"已排空"误判
-		// 消费(核心返工流程错误)。pause-only 则相反:用户要的就是"此刻停",
-		// 当场检查停靠点,不得再多派一个 worker。
-		if pauseOnly := e.applyPendingOps(ctx); pauseOnly {
-			if e.pauser.HandleBoundary() {
+		// hold+dispatch 必须先让配对派单建立返工事实；其它情况在派发前统一检查
+		// Gate，保证 boundary hold 和无许可 review 不会多跑一个 Worker。
+		deferGate := e.applyPendingOps(ctx) || e.nextDefersGate()
+		if !deferGate {
+			if e.gate.HandleBoundary() {
 				return
 			}
 		}
@@ -185,6 +188,14 @@ func (e *engine) run(ctx context.Context) {
 		if replaced := e.precheck(inst); replaced != nil {
 			inst = replaced
 		}
+		allowed, gateErr := e.gate.Allow(inst)
+		if gateErr != nil {
+			e.pauseWithNotify(notify.KindAdvanceGate, "章节推进控制错误，已暂停: "+gateErr.Error())
+			return
+		}
+		if !allowed {
+			return
+		}
 		if stop := e.trackDeadlock(ctx, &inst); stop {
 			return
 		}
@@ -202,12 +213,11 @@ func (e *engine) run(ctx context.Context) {
 			}
 		}
 
-		// 哨兵边界:worker 完成之后(与旧 FlowBoundaryHook 时点一致)。
-		// 预算止损优先于验收暂停;abort 回调会 cancel ctx,下轮顶部退出。
+		// 政策边界:预算止损优先于验收/推进暂停。
 		if e.budget.HandleBoundary() {
 			return
 		}
-		if e.pauser.HandleBoundary() {
+		if e.gate.HandleBoundary() {
 			return
 		}
 	}
@@ -218,7 +228,14 @@ func (e *engine) takeNext() *flow.Instruction {
 	defer e.mu.Unlock()
 	inst := e.next
 	e.next = nil
+	e.deferGateForNext = false
 	return inst
+}
+
+func (e *engine) nextDefersGate() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.next != nil && e.deferGateForNext
 }
 
 // planStartFallback 覆盖规划事实缺位、Route 无法推导规划师的两个窗口:
@@ -436,6 +453,7 @@ func (e *engine) handleWorkerError(ctx context.Context, inst *flow.Instruction, 
 	case "reroute":
 		e.mu.Lock()
 		e.next = &flow.Instruction{Agent: decision.Dispatch.Agent, Task: decision.Dispatch.Task, Reason: decision.Reason}
+		e.deferGateForNext = false
 		e.mu.Unlock()
 		return false
 	default: // abort
@@ -496,34 +514,40 @@ func (e *engine) recordFailureDecision(kind string, inst *flow.Instruction, fact
 // applyPendingOps 在循环边界提交干预的控制态动作;循环排空——同步重询
 // (reconsult)会在应用过程中追加新动作,必须在本边界内消化完,否则中间会
 // 多派一个 worker(干预必须先于后续创作生效)。
-// 返回是否出现过 pause-only 动作(调用方当场检查停靠点)。
-func (e *engine) applyPendingOps(ctx context.Context) (pauseOnly bool) {
+// 返回是否有 hold+dispatch 必须先执行配对派单；该情况下调用方暂缓 Gate 检查。
+func (e *engine) applyPendingOps(ctx context.Context) (deferGate bool) {
 	for {
 		e.mu.Lock()
 		ops := e.pending
 		e.pending = nil
 		e.mu.Unlock()
 		if len(ops) == 0 {
-			return pauseOnly
+			return deferGate
 		}
 		for _, op := range ops {
-			if op.pause != nil && !op.pause.Cancel && op.dispatch == nil && op.reopen == nil {
-				pauseOnly = true
-			}
-			if err := e.applyControlOp(ctx, op); err != nil && op.text != "" {
+			pairedHoldDispatch := op.hold != nil && !op.hold.Cancel && op.dispatch != nil
+			err := e.applyControlOp(ctx, op)
+			if err != nil {
 				// 动作持久化失败:host 已按"入队成功"清除 PendingSteer,
 				// 这里回存整条干预,恢复/继续时重新裁定重试(动作幂等 + 重询按新事实)。
-				if serr := e.store.RunMeta.SetPendingSteer(op.text); serr != nil {
-					slog.Warn("干预回存失败", "module", "engine", "err", serr)
+				if op.text != "" {
+					if serr := e.store.RunMeta.SetPendingSteer(op.text); serr != nil {
+						slog.Warn("干预回存失败", "module", "engine", "err", serr)
+					}
 				}
 				e.emitEvent(Event{Time: time.Now(), Category: "SYSTEM", Level: "warn",
 					Summary: "干预动作执行失败,已保留;恢复/继续时自动重试"})
+			} else if pairedHoldDispatch && e.nextDefersGate() {
+				// 只有 hold 与配对派单都成功落地，才允许绕过本次 Gate。
+				// hold 写入失败或派单因事实过期被丢弃时继续绕过，都会让
+				// 未受保护的 Worker 前进。
+				deferGate = true
 			}
 		}
 	}
 }
 
-// applyControlOp 执行单个控制态动作(pause/reopen 直接调用工具内核;dispatch 先对账)。
+// applyControlOp 执行单个控制态动作(hold 直写 RunMeta、reopen 调工具内核、dispatch 先对账)。
 // 引擎未运行时由 host 在干预路径直接调用;返回首个持久化失败(调用方据此决定是否
 // 保留 PendingSteer 供恢复重放)。
 func (e *engine) applyControlOp(ctx context.Context, op controlOp) error {
@@ -533,20 +557,44 @@ func (e *engine) applyControlOp(ctx context.Context, op controlOp) error {
 			firstErr = err
 		}
 	}
-	if op.pause != nil {
-		var args []byte
-		if op.pause.Cancel {
-			args, _ = json.Marshal(map[string]any{"cancel": true})
-		} else {
-			args, _ = json.Marshal(map[string]any{"after": domain.PauseAfterRewritesDrained, "reason": op.pause.Reason})
+	if op.dispatch != nil {
+		// Expect 必须在 hold 等配对动作落盘前核对。否则派单过期后旧 hold
+		// 会残留，并与按新事实重新裁定出的 hold 冲突，最终只暂停却漏做修改。
+		fresh := arbiter.CollectInterventionFacts(e.store)
+		if fresh.Phase != op.facts.Phase || fresh.Flow != op.facts.Flow ||
+			fresh.QueueHead() != op.facts.QueueHead() {
+			e.emitEvent(Event{Time: time.Now(), Category: "SYSTEM", Level: "warn",
+				Summary: "裁定派单已过时(事实推进),以最新事实重新裁定"})
+			e.recordStale(op)
+			if op.text != "" && e.reconsult != nil {
+				// 同步重询:干预必须先于后续创作生效——异步会让引擎在新裁定
+				// 落地前又派一个 worker。新动作由 applyPendingOps 在本边界排空。
+				e.reconsult(op.text)
+			}
+			return nil
 		}
-		if _, err := tools.NewSavePausePointTool(e.store).Execute(ctx, args); err != nil {
-			e.emitEvent(Event{Time: time.Now(), Category: "ERROR", Summary: "停靠点操作失败: " + err.Error(), Level: "error"})
-			fail(err)
-		} else if op.pause.Cancel {
-			e.emitEvent(Event{Time: time.Now(), Category: "SYSTEM", Summary: "已取消验收停靠点", Level: "info"})
+	}
+	if op.hold != nil {
+		if op.hold.Cancel {
+			meta, err := e.store.RunMeta.Load()
+			if err != nil {
+				e.emitEvent(Event{Time: time.Now(), Category: "ERROR", Summary: "读取一次性暂停失败: " + err.Error(), Level: "error"})
+				return err
+			}
+			if meta != nil && meta.AdvanceHold != nil {
+				if err := e.store.RunMeta.ClearAdvanceHold(*meta.AdvanceHold); err != nil {
+					e.emitEvent(Event{Time: time.Now(), Category: "ERROR", Summary: "取消一次性暂停失败: " + err.Error(), Level: "error"})
+					return err
+				}
+			}
+			e.emitEvent(Event{Time: time.Now(), Category: "SYSTEM", Summary: "已取消一次性暂停", Level: "info"})
 		} else {
-			e.emitEvent(Event{Time: time.Now(), Category: "SYSTEM", Summary: "已设验收停靠点: " + op.pause.Reason, Level: "info"})
+			hold := domain.AdvanceHold{After: op.hold.After, Reason: op.hold.Reason}
+			if err := e.store.RunMeta.SetAdvanceHold(hold); err != nil {
+				e.emitEvent(Event{Time: time.Now(), Category: "ERROR", Summary: "设置一次性暂停失败: " + err.Error(), Level: "error"})
+				return err // hold 未落盘时关联 dispatch 不得执行
+			}
+			e.emitEvent(Event{Time: time.Now(), Category: "SYSTEM", Summary: "已设置一次性暂停: " + op.hold.Reason, Level: "info"})
 		}
 	}
 	if op.reopen != nil {
@@ -560,30 +608,14 @@ func (e *engine) applyControlOp(ctx context.Context, op controlOp) error {
 		}
 	}
 	if op.dispatch != nil {
-		// Expect 对账(RFC §3):比语义字段 Phase/Flow/QueueHead——它们变了说明
-		// 裁定依据的局面已不成立。CheckpointSeq 只留审计不参与对账:干预到达时
-		// worker 多半正在跑,其 checkpoint 必然推进 seq,拿它对账会把每次运行中
-		// 干预都误判过期(每次多付一次重询 LLM 调用)。
-		// 不符 → 丢弃过期派单,把原始干预送回 host 完整裁定路径重询。
-		fresh := arbiter.CollectInterventionFacts(e.store)
-		if fresh.Phase != op.facts.Phase || fresh.Flow != op.facts.Flow ||
-			fresh.QueueHead() != op.facts.QueueHead() {
-			e.emitEvent(Event{Time: time.Now(), Category: "SYSTEM", Level: "warn",
-				Summary: "裁定派单已过时(事实推进),以最新事实重新裁定"})
-			e.recordStale(op)
-			if op.text != "" && e.reconsult != nil {
-				// 同步重询:干预必须先于后续创作生效——异步会让引擎在新裁定
-				// 落地前又派一个 worker。重询产生的新动作由 applyPendingOps
-				// 的排空循环在同一边界内消化。
-				e.reconsult(op.text)
-			}
-			return firstErr
-		}
+		// Expect 已在任何配对状态写入前核对。CheckpointSeq 只留审计不参与
+		// 对账：干预到达时 worker 多半正在跑，seq 必然推进。
 		e.mu.Lock()
 		// 已知窗口(best-effort 边界,见 engine-arbiter.md 澄清③):派单自此存于内存,
 		// worker 启动前被硬杀(kill -9,defer 不执行)会丢失本次派单意图——
 		// 正常退出/Abort 由 run 的 defer 回存 PendingSteer 兜底。
 		e.next = &flow.Instruction{Agent: op.dispatch.Agent, Task: op.dispatch.Task, Reason: "用户干预裁定"}
+		e.deferGateForNext = op.hold != nil && !op.hold.Cancel
 		e.mu.Unlock()
 	}
 	return firstErr

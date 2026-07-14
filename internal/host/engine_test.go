@@ -139,6 +139,9 @@ func scriptedWriterModel() *scriptedChatModel {
 // newTestEngine 组装带真实 store/observer 的引擎;返回引擎、事件采集与完成信号。
 func newTestEngine(t *testing.T, st *storepkg.Store, workers *subagent.Tool, arbiterModel agentcore.ChatModel) (*engine, *[]Event, chan struct{}) {
 	t.Helper()
+	if err := st.RunMeta.Init("default", "test", "test"); err != nil {
+		t.Fatalf("init run meta: %v", err)
+	}
 	var mu sync.Mutex
 	events := &[]Event{}
 	done := make(chan struct{}, 1)
@@ -169,6 +172,7 @@ func newTestEngine(t *testing.T, st *storepkg.Store, workers *subagent.Tool, arb
 			}
 		},
 	}
+	e.gate = NewChapterAdvanceGate(st, func(string) { e.abort() }, func(string, string) {})
 	return e, events, done
 }
 
@@ -178,6 +182,90 @@ func waitEngineDone(t *testing.T, done chan struct{}) {
 	case <-done:
 	case <-time.After(30 * time.Second):
 		t.Fatal("引擎未在期限内停机")
+	}
+}
+
+func TestEngine_ReviewPermitWritesExactlyOneNewChapter(t *testing.T) {
+	st := storepkg.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Progress.Init("逐章验收试书", 3); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Progress.UpdatePhase(domain.PhaseWriting); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Outline.SaveOutline([]domain.OutlineEntry{
+		{Chapter: 1, Title: "一", CoreEvent: "a"},
+		{Chapter: 2, Title: "二", CoreEvent: "b"},
+		{Chapter: 3, Title: "三", CoreEvent: "c"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	writer := subagent.Config{
+		Name: "writer", Description: "test writer", Model: scriptedWriterModel(), SystemPrompt: "test",
+		Tools: []agentcore.Tool{
+			tools.NewPlanChapterTool(st), tools.NewDraftChapterTool(st),
+			tools.NewCheckConsistencyTool(st), tools.NewCommitChapterTool(st),
+		},
+		MaxTurns: 10, StopAfterTools: []string{"commit_chapter"},
+	}
+	e, _, done := newTestEngine(t, st, subagent.New(writer), nil)
+	if err := st.RunMeta.SetAdvanceMode(domain.ChapterAdvanceReview); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.RunMeta.GrantAdvancePermit(1); err != nil {
+		t.Fatal(err)
+	}
+	if !e.start(nil) {
+		t.Fatal("engine start")
+	}
+	waitEngineDone(t, done)
+
+	progress, err := st.Progress.Load()
+	if err != nil || progress == nil {
+		t.Fatalf("load progress: %v", err)
+	}
+	if len(progress.CompletedChapters) != 1 || progress.CompletedChapters[0] != 1 {
+		t.Fatalf("一个许可必须恰好只稳定一个新章: %v", progress.CompletedChapters)
+	}
+	meta, _ := st.RunMeta.Load()
+	if meta.AdvancePermitChapter != 0 {
+		t.Fatalf("稳定提交后许可必须消费: %+v", meta)
+	}
+}
+
+func TestEngine_StalePairedDispatchDoesNotBypassHold(t *testing.T) {
+	st := storepkg.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Progress.Init("过期派单试书", 3); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Progress.UpdatePhase(domain.PhaseWriting); err != nil {
+		t.Fatal(err)
+	}
+	e, _, _ := newTestEngine(t, st, subagent.New(), nil)
+	e.pending = []controlOp{{
+		hold:     &arbiter.AdvanceHoldOp{After: domain.AdvanceHoldAtBoundary, Reason: "先停下"},
+		dispatch: &arbiter.DispatchOp{Agent: "editor", Task: "过期任务"},
+		facts:    arbiter.InterventionFacts{Phase: string(domain.PhaseOutline)},
+	}}
+
+	if e.applyPendingOps(context.Background()) {
+		t.Fatal("事实过期的配对派单未落入 next 时不得绕过 Gate")
+	}
+	if e.next != nil || e.deferGateForNext {
+		t.Fatalf("过期派单不得留下可执行指令: next=%+v defer=%v", e.next, e.deferGateForNext)
+	}
+	meta, _ := st.RunMeta.Load()
+	if meta.AdvanceHold != nil {
+		t.Fatalf("配对派单过期时不得留下孤立 hold: %+v", meta.AdvanceHold)
+	}
+	if e.gate.HandleBoundary() {
+		t.Fatal("无孤立 hold 时 Gate 不应伪造暂停")
 	}
 }
 
@@ -636,12 +724,9 @@ func TestEngine_PauseWithEditorDispatchWaitsForRewriteQueue(t *testing.T) {
 	}
 
 	e, _, done := newTestEngine(t, st, subagent.New(editor, writer), nil)
-	// 停靠点哨兵:消费即 abort(与 Host 接线同构)。
-	e.pauser = NewPausePointSentinel(st, func(reason string) { e.abort() }, func(string, string) {})
-
-	// 模拟 Arbiter 返工裁定:pause + dispatch editor(引擎未运行 → 立即应用)。
+	// 模拟 Arbiter 返工裁定:hold + dispatch editor(引擎未运行 → 立即应用)。
 	e.applyControlOp(context.Background(), controlOp{
-		pause:    &arbiter.PauseOp{Reason: "重写第1章语气,改完暂停验收"},
+		hold:     &arbiter.AdvanceHoldOp{After: domain.AdvanceHoldAfterRewritesDrained, Reason: "重写第1章语气,改完暂停验收"},
 		dispatch: &arbiter.DispatchOp{Agent: "editor", Task: "复核第 1 章:语气改冷,save_review(verdict=rewrite, affected_chapters=[1])"},
 		facts:    arbiter.CollectInterventionFacts(st),
 	})
@@ -667,15 +752,15 @@ func TestEngine_PauseWithEditorDispatchWaitsForRewriteQueue(t *testing.T) {
 		t.Fatalf("停靠点应在续写第 2 章前暂停, completed=%v", progress.CompletedChapters)
 	}
 	meta, _ := st.RunMeta.Load()
-	if meta != nil && meta.PausePoint != nil {
-		t.Fatalf("停靠点应已消费, got %+v", meta.PausePoint)
+	if meta != nil && meta.AdvanceHold != nil {
+		t.Fatalf("一次性暂停应已消费, got %+v", meta.AdvanceHold)
 	}
 }
 
-// TestEngine_PauseOnlyDoesNotDispatchAnotherWorker 回归(评审阻断2的反面):
-// 用户干预只裁定出停靠点(无派单/返工队列为空)时,引擎必须在当前边界立即
-// 消费停靠点暂停,不得再多写一章。
-func TestEngine_PauseOnlyDoesNotDispatchAnotherWorker(t *testing.T) {
+// TestEngine_BoundaryHoldDoesNotDispatchAnotherWorker 回归：
+// 用户干预只裁定出 boundary hold（无派单）时，引擎必须在当前边界立即
+// 消费 hold 并暂停，不得再多写一章。
+func TestEngine_BoundaryHoldDoesNotDispatchAnotherWorker(t *testing.T) {
 	st := storepkg.NewStore(t.TempDir())
 	if err := st.Init(); err != nil {
 		t.Fatalf("init: %v", err)
@@ -706,14 +791,12 @@ func TestEngine_PauseOnlyDoesNotDispatchAnotherWorker(t *testing.T) {
 		MaxTurns: 10, StopAfterTools: []string{"commit_chapter"},
 	}
 	e, _, done := newTestEngine(t, st, subagent.New(writer), nil)
-	e.pauser = NewPausePointSentinel(st, func(reason string) { e.abort() }, func(string, string) {})
-
 	if !e.start(nil) {
 		t.Fatal("engine start")
 	}
-	// 第 1 章写作期间到达 pause-only 干预(与真实 Steer 时序一致)。
+	// 第 1 章写作期间到达 hold-only 干预（与真实 Steer 时序一致）。
 	e.enqueue(controlOp{
-		pause: &arbiter.PauseOp{Reason: "先停一下我看看"},
+		hold:  &arbiter.AdvanceHoldOp{After: domain.AdvanceHoldAtBoundary, Reason: "先停一下我看看"},
 		facts: arbiter.CollectInterventionFacts(st),
 	})
 	waitEngineDone(t, done)
@@ -724,11 +807,11 @@ func TestEngine_PauseOnlyDoesNotDispatchAnotherWorker(t *testing.T) {
 	}
 	// 干预在第 1 章运行中到达 → 第 1 章写完;停靠点在边界立即消费 → 第 2 章不得开写。
 	if n := len(progress.CompletedChapters); n > 1 {
-		t.Fatalf("pause-only 后不得再多写一章, completed=%v", progress.CompletedChapters)
+		t.Fatalf("boundary hold 后不得再多写一章, completed=%v", progress.CompletedChapters)
 	}
 	meta, _ := st.RunMeta.Load()
-	if meta != nil && meta.PausePoint != nil {
-		t.Fatalf("停靠点应已消费, got %+v", meta.PausePoint)
+	if meta != nil && meta.AdvanceHold != nil {
+		t.Fatalf("一次性暂停应已消费, got %+v", meta.AdvanceHold)
 	}
 }
 
@@ -764,7 +847,7 @@ func TestEngine_ExitRaceRestoresPendingDispatch(t *testing.T) {
 	}
 	// worker 运行中:入队 pause+dispatch,随即 abort(动作永远等不到下个边界)。
 	e.enqueue(controlOp{
-		pause:    &arbiter.PauseOp{Reason: "验收"},
+		hold:     &arbiter.AdvanceHoldOp{After: domain.AdvanceHoldAfterRewritesDrained, Reason: "验收"},
 		dispatch: &arbiter.DispatchOp{Agent: "writer", Task: "重写第 1 章"},
 		text:     "重写第1章然后停下来",
 		facts:    arbiter.CollectInterventionFacts(st),
@@ -779,7 +862,7 @@ func TestEngine_ExitRaceRestoresPendingDispatch(t *testing.T) {
 	if meta.PendingSteer != "重写第1章然后停下来" {
 		t.Fatalf("残留派单必须回存 PendingSteer 供恢复重放, got %q", meta.PendingSteer)
 	}
-	if meta.PausePoint == nil {
-		t.Fatal("pause 事实动作应在退出清理中补执行")
+	if meta.AdvanceHold == nil {
+		t.Fatal("hold 事实动作应在退出清理中补执行")
 	}
 }

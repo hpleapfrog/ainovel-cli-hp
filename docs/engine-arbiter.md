@@ -1,6 +1,6 @@
 # 控制面演进:Engine + Arbiter(移除 Coordinator 长循环)
 
-> 状态(2026-07-12 v5):**代码实现完成**——Engine/Arbiter 已实施,Coordinator 及全部配套已删除(§十清单);端到端验证六条路径:写完整书 / 失败裁定 / 僵局裁定 / 返工验收(pause+editor 时序)/ pause-only 即停 / 退出竞态干预保全(internal/host/engine_test.go)。三轮外部评审的阻断项全部处置(含 feedback 事实闭环、PendingSteer 崩溃保护、lifecycle 竞态)。
+> 状态(2026-07-14 v6):**代码实现完成**——Engine/Arbiter 已实施,Coordinator 及全部配套已删除(§十清单);端到端验证写完整书、失败裁定、僵局裁定、返工验收(hold+editor 时序)、boundary hold 即停、退出竞态干预保全与单许可单章节。三轮外部评审的阻断项全部处置(含 feedback 事实闭环、PendingSteer 崩溃保护、lifecycle 竞态)。
 > **文档迁移已完成(2026-07-12)**:architecture.md 正文已全量重写为 Engine+Arbiter 现行架构(含新验证策略/目录/纪律);README、context-management、evaluation-system、observability、user-rules-runtime 的旧架构叙事已清理(仅保留标注的历史对照)。Coordinator 配置与会话兼容路径均已删除；Arbiter 当前刻意统一使用 Default 模型，不开放独立角色配置。
 > **设计语义澄清(第四/五轮评审)**:① writer feedback 的消费点**就是**下一次结构操作(expand_arc/append_volume/update_compass 经 novel_context 参考后清空)——它是"对后续大纲的建议"(commit schema 原文),不是即时调度信号;弧中途的严重偏离走 editor 评审与用户干预通道。非分层书无结构操作,**commit 不落盘其 feedback**(避免永久无消费者的垃圾事实;返回值镜像保留供诊断)。② rule_violations 已闭环:commit 双路径落盘(**best-effort 质量元数据**,与章节提交非同级强一致——恰在 pending_commit 清除后崩溃会缺一条记录,可接受)→ novel_context(chapter=N) 注入 → editor 按 §机械检查映射消费。③ PendingSteer 崩溃保护是 **best-effort 单在途持久化**:裁定期、动作应用失败、正常退出/Abort 全程受保护;两个明确不保证的窗口——(a) 派单转入内存执行队列(e.next)后、worker 启动前的硬杀进程(毫秒级窗口,defer 不执行);(b) interMu 等待中的并发干预(尚未写入槽位)。用户在场可感知,重发成本秒级,不为此建持久化 intent/FIFO。④ 启动裁定失败不是死局(2026-07-12 真实故障补课:provider 账号失效致 plan_start 失败,恢复路径全部走不通):StartPrompt(输入事实)改为在裁定**之前**落盘;plan_start 从未完成时,引擎 planStartFallback 依据它现场补裁——首次裁定的重试不违反"恢复不重做已有裁定";补裁失败显式暂停回显,失败裁定的审计记录带 error 字段(DecisionRecord.Error)。
 > 本文档保留为设计决策记录;当前架构见 README 架构节与 docs/engine-rfc.md。关联:docs/voice-layer.md(已实施)。
@@ -78,7 +78,7 @@ type PlanStartDecision struct {
 type InterventionDecision struct {
     Answer   string
     Rules    string
-    Pause    *PauseOp
+    Hold     *AdvanceHoldOp
     Reopen   *ReopenOp
     Dispatch *DispatchDecision
     Reason   string
@@ -125,7 +125,7 @@ func DecideIntervention(ctx, model, facts, text) (InterventionDecision, error) /
        → Worker 运行 → 重算 Route 后置条件 → 下一轮
 ```
 
-- **不变量:控制状态只在 Engine 边界串行变更。**干预可在 Worker 运行期间并行咨询(只读安全、用户秒级看到 Answer/Reason 回显),但**改控制态的动作(pause/reopen/dispatch)进 Engine 队列,边界核对后提交**;answer(无状态)与 rules(内容平面,本章旧规则下章生效即语义)即时执行
+- **不变量:控制状态只在 Engine 边界串行变更。**干预可在 Worker 运行期间并行咨询(只读安全、用户秒级看到 Answer/Reason 回显),但**改控制态的动作(hold/reopen/dispatch)进 Engine 队列,边界核对后提交**;answer(无状态)与 rules(内容平面,本章旧规则下章生效即语义)即时执行
 - 每个 Dispatch 携带 Collect 时刻快照,边界对账,不符 → 丢弃、记 `decision_stale`、以新事实重询:
 
 ```go
@@ -142,7 +142,7 @@ type DispatchExpect struct {
 ## 六、恢复模型(只恢复事实,不恢复会话)
 
 ```
-启动 → 读 Progress → 读最新 Checkpoint → 查 PendingSteer/PausePoint → Route → 继续运行 Worker
+启动 → 读 Progress → 读最新 Checkpoint → 查 PendingSteer/AdvanceHold/章节许可 → Gate 对账 → Route → 继续运行 Worker
 ```
 
 plan_start 的恢复依赖单一持久化事实(RunMeta 内),**裁定先落事实、再起执行**:

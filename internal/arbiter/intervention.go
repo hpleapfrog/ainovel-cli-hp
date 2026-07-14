@@ -23,8 +23,10 @@ type InterventionFacts struct {
 	PendingRewrites   []int            `json:"pending_rewrites,omitempty"`
 	FoundationMissing []string         `json:"foundation_missing,omitempty"`
 	PlanningTier      string           `json:"planning_tier,omitempty"`
-	HasPausePoint     bool             `json:"has_pause_point"`
-	PauseReason       string           `json:"pause_reason,omitempty"`
+	AdvanceMode       string           `json:"advance_mode,omitempty"`
+	HasAdvanceHold    bool             `json:"has_advance_hold"`
+	AdvanceHoldAfter  string           `json:"advance_hold_after,omitempty"`
+	AdvanceHoldReason string           `json:"advance_hold_reason,omitempty"`
 	Running           bool             `json:"running"`                  // 干预到达时是否有 run 在进行
 	CheckpointSeq     int64            `json:"checkpoint_seq,omitempty"` // Collect 时刻最新 checkpoint;Engine 对账用
 	RecentDecisions   []RecentDecision `json:"recent_decisions,omitempty"`
@@ -63,9 +65,11 @@ func CollectInterventionFacts(st *storepkg.Store) InterventionFacts {
 	}
 	if meta, err := st.RunMeta.Load(); err == nil && meta != nil {
 		f.PlanningTier = string(meta.PlanningTier)
-		if meta.PausePoint != nil {
-			f.HasPausePoint = true
-			f.PauseReason = meta.PausePoint.Reason
+		f.AdvanceMode = string(meta.AdvanceMode)
+		if meta.AdvanceHold != nil {
+			f.HasAdvanceHold = true
+			f.AdvanceHoldAfter = string(meta.AdvanceHold.After)
+			f.AdvanceHoldReason = meta.AdvanceHold.Reason
 		}
 	}
 	if cp := st.Checkpoints.LatestGlobal(); cp != nil {
@@ -84,10 +88,11 @@ func CollectInterventionFacts(st *storepkg.Store) InterventionFacts {
 	return f
 }
 
-// PauseOp 停靠点动作:设(after=rewrites_drained 固定)或取消。
-type PauseOp struct {
-	Cancel bool   `json:"cancel,omitempty"`
-	Reason string `json:"reason,omitempty"` // 设置时必填:用户诉求摘要
+// AdvanceHoldOp 一次性暂停动作：在 Worker 边界或返工排空后暂停，也可取消。
+type AdvanceHoldOp struct {
+	Cancel bool                    `json:"cancel,omitempty"`
+	After  domain.AdvanceHoldAfter `json:"after,omitempty"`
+	Reason string                  `json:"reason,omitempty"`
 }
 
 // ReopenOp 完本返工:把全书重开进返工态并把目标章入队(仅 phase=complete 合法)。
@@ -97,14 +102,14 @@ type ReopenOp struct {
 }
 
 // InterventionDecision 干预裁定。动作组合自由,执行顺序由 Engine 固定:
-// answer → rules → pause → reopen → dispatch;至多一个 dispatch(类型事实)。
+// answer → rules → hold → reopen → dispatch;至多一个 dispatch(类型事实)。
 type InterventionDecision struct {
-	Answer   string      `json:"answer,omitempty"`
-	Rules    string      `json:"rules,omitempty"`
-	Pause    *PauseOp    `json:"pause,omitempty"`
-	Reopen   *ReopenOp   `json:"reopen,omitempty"`
-	Dispatch *DispatchOp `json:"dispatch,omitempty"`
-	Reason   string      `json:"reason"`
+	Answer   string         `json:"answer,omitempty"`
+	Rules    string         `json:"rules,omitempty"`
+	Hold     *AdvanceHoldOp `json:"hold,omitempty"`
+	Reopen   *ReopenOp      `json:"reopen,omitempty"`
+	Dispatch *DispatchOp    `json:"dispatch,omitempty"`
+	Reason   string         `json:"reason"`
 }
 
 // ValidateAgainst 按事实做机械校验(场景内合法性;类型已排除跨场景动作)。
@@ -112,7 +117,7 @@ func (d *InterventionDecision) ValidateAgainst(f InterventionFacts) error {
 	if strings.TrimSpace(d.Reason) == "" {
 		return fmt.Errorf("reason 不能为空")
 	}
-	if d.Answer == "" && d.Rules == "" && d.Pause == nil && d.Reopen == nil && d.Dispatch == nil {
+	if d.Answer == "" && d.Rules == "" && d.Hold == nil && d.Reopen == nil && d.Dispatch == nil {
 		return fmt.Errorf("空决策：至少要有一个动作或 answer")
 	}
 	if err := d.Dispatch.validate(); err != nil {
@@ -135,8 +140,16 @@ func (d *InterventionDecision) ValidateAgainst(f InterventionFacts) error {
 	if complete && d.Dispatch != nil {
 		return fmt.Errorf("完本期禁止直接派单；返工用 reopen（入队后由 Router 自动派发）")
 	}
-	if d.Pause != nil && !d.Pause.Cancel && strings.TrimSpace(d.Pause.Reason) == "" {
-		return fmt.Errorf("设置停靠点必须带 reason（用户诉求摘要）")
+	if d.Hold != nil && !d.Hold.Cancel {
+		if f.Phase != string(domain.PhaseWriting) {
+			return fmt.Errorf("一次性暂停仅限写作期（当前 phase=%s）", f.Phase)
+		}
+		if !d.Hold.After.Valid() {
+			return fmt.Errorf("hold.after 必须是 boundary 或 rewrites_drained")
+		}
+		if strings.TrimSpace(d.Hold.Reason) == "" {
+			return fmt.Errorf("设置一次性暂停必须带 reason（用户诉求摘要）")
+		}
 	}
 	return nil
 }

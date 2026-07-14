@@ -161,7 +161,7 @@ func TestInterventionDecision_ValidateAgainst(t *testing.T) {
 		{"缺 reason", InterventionDecision{Answer: "好的"}, writing, true},
 		{"查询类", InterventionDecision{Answer: "已完成 10 章", Reason: "查询"}, writing, false},
 		{"返工组合", InterventionDecision{
-			Pause:    &PauseOp{Reason: "重写第3章语气"},
+			Hold:     &AdvanceHoldOp{After: domain.AdvanceHoldAfterRewritesDrained, Reason: "重写第3章语气"},
 			Dispatch: &DispatchOp{Agent: "editor", Task: "重写第3章:语气改冷"},
 			Reason:   "改已写章节",
 		}, writing, false},
@@ -170,8 +170,10 @@ func TestInterventionDecision_ValidateAgainst(t *testing.T) {
 		{"完本期 reopen", InterventionDecision{Reopen: &ReopenOp{Chapters: []int{3}}, Reason: "返工"}, complete, false},
 		{"完本期 reopen 越界", InterventionDecision{Reopen: &ReopenOp{Chapters: []int{99}}, Reason: "r"}, complete, true},
 		{"完本期直接派单", InterventionDecision{Dispatch: &DispatchOp{Agent: "writer", Task: "x"}, Reason: "r"}, complete, true},
-		{"设停靠点缺摘要", InterventionDecision{Pause: &PauseOp{}, Reason: "r"}, writing, true},
-		{"取消停靠点", InterventionDecision{Pause: &PauseOp{Cancel: true}, Answer: "继续", Reason: "r"}, writing, false},
+		{"一次性暂停缺条件", InterventionDecision{Hold: &AdvanceHoldOp{Reason: "停"}, Reason: "r"}, writing, true},
+		{"一次性暂停缺摘要", InterventionDecision{Hold: &AdvanceHoldOp{After: domain.AdvanceHoldAtBoundary}, Reason: "r"}, writing, true},
+		{"取消一次性暂停", InterventionDecision{Hold: &AdvanceHoldOp{Cancel: true}, Answer: "继续", Reason: "r"}, writing, false},
+		{"完本期设置一次性暂停", InterventionDecision{Hold: &AdvanceHoldOp{After: domain.AdvanceHoldAtBoundary, Reason: "停"}, Reason: "r"}, complete, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -205,6 +207,15 @@ func TestCollectInterventionFacts(t *testing.T) {
 	if err := st.Progress.Init("测试书", 30); err != nil {
 		t.Fatalf("progress: %v", err)
 	}
+	if err := st.RunMeta.Init("default", "openrouter", "m"); err != nil {
+		t.Fatalf("run meta: %v", err)
+	}
+	if err := st.RunMeta.SetAdvanceMode(domain.ChapterAdvanceReview); err != nil {
+		t.Fatalf("advance mode: %v", err)
+	}
+	if err := st.RunMeta.SetAdvanceHold(domain.AdvanceHold{After: domain.AdvanceHoldAtBoundary, Reason: "验收"}); err != nil {
+		t.Fatalf("advance hold: %v", err)
+	}
 	if _, err := st.Decisions.Append(storepkg.DecisionRecord{Kind: "intervention", Decider: "arbiter", Input: "上次干预", Reason: "已入队"}); err != nil {
 		t.Fatalf("append decision: %v", err)
 	}
@@ -215,6 +226,9 @@ func TestCollectInterventionFacts(t *testing.T) {
 	}
 	if len(f.RecentDecisions) != 1 || f.RecentDecisions[0].Input != "上次干预" {
 		t.Fatalf("干预记忆缺失: %+v", f.RecentDecisions)
+	}
+	if f.AdvanceMode != string(domain.ChapterAdvanceReview) || !f.HasAdvanceHold || f.AdvanceHoldAfter != string(domain.AdvanceHoldAtBoundary) {
+		t.Fatalf("推进控制事实缺失: %+v", f)
 	}
 	if len(f.FoundationMissing) == 0 {
 		t.Fatal("新书应有基础设定缺项")

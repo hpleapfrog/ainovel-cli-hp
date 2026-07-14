@@ -556,10 +556,18 @@ func (m *Model) syncRuntimePlaceholder() {
 	case "pausing":
 		m.textarea.Placeholder = "正在暂停创作..."
 	case "paused":
-		m.textarea.Placeholder = "创作已暂停，输入任意内容继续创作"
+		if m.snapshot.AdvanceMode == "review" && m.snapshot.Phase == "writing" {
+			m.textarea.Placeholder = "逐章验收等待中：输入修改意见，或 /next 放行下一章"
+		} else {
+			m.textarea.Placeholder = "创作已暂停，输入任意内容继续创作"
+		}
 	default:
 		if !m.snapshot.IsRunning {
-			m.textarea.Placeholder = "运行中断，输入任意内容恢复创作"
+			if m.snapshot.AdvanceMode == "review" && m.snapshot.Phase == "writing" {
+				m.textarea.Placeholder = "逐章验收等待中：输入修改意见，或 /next 放行下一章"
+			} else {
+				m.textarea.Placeholder = "运行中断，输入任意内容恢复创作"
+			}
 		} else {
 			m.textarea.Placeholder = defaultSteerPlaceholder()
 		}

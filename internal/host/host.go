@@ -47,7 +47,7 @@ type Host struct {
 	usage           *UsageTracker
 	usageCancel     context.CancelFunc  // 停掉 autoSaveLoop 并触发最后一次 flush
 	budget          *BudgetSentinel     // 预算政策；未启用为 nil（方法 nil 安全）
-	pauser          *PausePointSentinel // 用户停靠点政策（方法 nil 安全）
+	gate            *ChapterAdvanceGate // 章节许可与一次性暂停的统一政策组件
 	notifier        *notify.Notifier    // 无人值守告警；未启用为 nil（Send nil 安全）
 
 	events   chan Event
@@ -90,6 +90,11 @@ func New(cfg bootstrap.Config, bundle assets.Bundle) (*Host, error) {
 	store := storepkg.NewStore(cfg.OutputDir)
 	if err := store.Init(); err != nil {
 		return nil, fmt.Errorf("init store: %w", err)
+	}
+	// RunMeta 是所有控制语义的事实源，必须在构造模型/后台任务之前完成校验。
+	// 未知 advance mode 直接返回结构化错误；禁止猜测降级后继续写盘。
+	if err := store.RunMeta.Init(cfg.Style, cfg.Provider, cfg.ModelName); err != nil {
+		return nil, fmt.Errorf("init run meta: %w", err)
 	}
 
 	models, err := bootstrap.NewModelSet(cfg)
@@ -172,15 +177,15 @@ func New(cfg bootstrap.Config, bundle assets.Bundle) (*Host, error) {
 			h.notifier.Send(notify.Notification{Kind: notify.KindBudget, Level: "warn", Title: "ainovel: 预算", Body: blind})
 		})
 	}
-	// 停靠点哨兵：执行用户预约的"重写完暂停"指令，事件+notify 成对（架构 §2.3）。
-	h.pauser = NewPausePointSentinel(store,
+	// 统一前进闸门：执行一次性 hold，并阻止 review 模式下无许可的新章。
+	h.gate = NewChapterAdvanceGate(store,
 		func(reason string) {
 			h.abortWithEvent(reason, "info")
-			h.notifier.Send(notify.Notification{Kind: notify.KindPausePoint, Level: "info", Title: "ainovel: 验收停靠点", Body: reason})
+			h.notifier.Send(notify.Notification{Kind: notify.KindAdvanceGate, Level: "info", Title: "ainovel: 等待验收", Body: reason})
 		},
 		func(level, summary string) {
 			h.emitEvent(Event{Time: time.Now(), Category: "SYSTEM", Summary: summary, Level: level})
-			h.notifier.Send(notify.Notification{Kind: notify.KindPausePoint, Level: level, Title: "ainovel: 验收停靠点", Body: summary})
+			h.notifier.Send(notify.Notification{Kind: notify.KindAdvanceGate, Level: level, Title: "ainovel: 章节推进", Body: summary})
 		},
 	)
 	// StopGuard 拦截浮出：blocked 是高频自愈动作，只进屏内事件流（推送会刷屏）；
@@ -213,7 +218,7 @@ func New(cfg bootstrap.Config, bundle assets.Bundle) (*Host, error) {
 		reconsult: h.handleIntervention,
 		observer:  h.observer,
 		budget:    h.budget,
-		pauser:    h.pauser,
+		gate:      h.gate,
 		refresh:   h.refreshWriterRestore,
 		emitEvent: h.emitEvent,
 		notify: func(kind, level, title, body string) {
@@ -221,10 +226,6 @@ func New(cfg bootstrap.Config, bundle assets.Bundle) (*Host, error) {
 		},
 		onPause: func(summary string) { h.abortWithEvent(summary, "warn") },
 		onDone:  h.runEnded,
-	}
-
-	if err := store.RunMeta.Init(cfg.Style, cfg.Provider, cfg.ModelName); err != nil {
-		slog.Error("初始化运行元信息失败", "module", "boot", "err", err)
 	}
 
 	return h, nil
@@ -346,7 +347,9 @@ func (h *Host) StartPrepared(rawRequirement string) error {
 	slog.Info("开始创作", "module", "host", "planner", decision.Planner)
 	h.emitEvent(Event{Time: time.Now(), Category: "SYSTEM",
 		Summary: fmt.Sprintf("开始创作（规划师: %s——%s）", decision.Planner, decision.Reason), Level: "info"})
-	h.startEngine(&flow.Instruction{Agent: decision.Planner, Task: decision.Task, Reason: decision.Reason})
+	if !h.startEngine(&flow.Instruction{Agent: decision.Planner, Task: decision.Task, Reason: decision.Reason}) {
+		return fmt.Errorf("Engine 已在运行或正在停止，无法启动新书")
+	}
 	return nil
 }
 
@@ -354,12 +357,23 @@ func (h *Host) StartPrepared(rawRequirement string) error {
 // lifecycle 必须先于 goroutine 启动置为 running:引擎可能立即结束(完本/无路由),
 // runEnded 会把 lifecycle 落到终态;若顺序颠倒,runEnded 先跑、这里再写 running,
 // UI 将永远显示"运行中"而引擎实际已停。
-func (h *Host) startEngine(initial *flow.Instruction) {
-	h.observer.setAborting(false)
+func (h *Host) startEngine(initial *flow.Instruction) bool {
 	h.mu.Lock()
+	defer h.mu.Unlock()
+	// lifecycle 可能已经是 paused，但旧 Engine goroutine 仍在执行退出 defer。
+	// 必须同时核对 Engine 真状态；否则会把 lifecycle 改回 running，而 start
+	// 实际 no-op，随后旧 runEnded 又把它落成 idle。
+	if h.engine.isRunning() {
+		return false
+	}
+	h.observer.setAborting(false)
+	previous := h.lifecycle
 	h.lifecycle = lifecycleRunning
-	h.mu.Unlock()
-	h.engine.start(initial)
+	if !h.engine.start(initial) {
+		h.lifecycle = previous
+		return false
+	}
+	return true
 }
 
 // Resume 恢复模式：从 checkpoint + progress 生成 resume prompt 并启动。
@@ -395,8 +409,6 @@ func (h *Host) Resume() (string, error) {
 	// 确保用户规则快照存在；已有则廉价读取。
 	h.ensureUserRules()
 	h.refreshWriterRestore()
-	// 停靠点对账：崩溃恰在"排空后、消费前"时，用户手动 Resume 即视为放行。
-	h.pauser.ReconcileOnResume()
 	// 待处理干预(停机期留下的/裁定期崩溃残留的)必须先于引擎续跑裁定——
 	// 否则引擎可能抢在裁定前继续写出与干预相悖的章节。同步执行(阻塞数秒可接受,
 	// UI 已显示"恢复创作");doIntervention 成功后自行清除 PendingSteer 并按
@@ -406,12 +418,16 @@ func (h *Host) Resume() (string, error) {
 		// 裁定失败(已回显)时也要恢复续跑——书不能因一条无法理解的旧干预卡死。
 		if !h.engine.isRunning() {
 			if err := h.budget.Refuse(); err == nil {
-				h.startEngine(nil)
+				if !h.startEngine(nil) {
+					return label, fmt.Errorf("Engine 正在完成上一轮停止，请稍后重试恢复")
+				}
 			}
 		}
 	} else {
 		// 只恢复事实,不恢复会话(RFC §6):Engine 从 store 重算路由续跑。
-		h.startEngine(nil)
+		if !h.startEngine(nil) {
+			return label, fmt.Errorf("Engine 正在完成上一轮停止，请稍后重试恢复")
+		}
 	}
 	// lifecycle 由 startEngine / runEnded 管理,此处不再覆写——
 	// 引擎立即结束(完本等)时覆写会把终态改回 running。
@@ -420,7 +436,7 @@ func (h *Host) Resume() (string, error) {
 
 // handleIntervention 用户干预的统一裁定路径:Collect → Decide → 执行。
 // FIFO 串行(同一时刻至多一次在途咨询);answer/rules 即时执行,控制态动作
-// (pause/reopen/dispatch)引擎运行中排队边界提交、停机时立即执行。
+// (hold/reopen/dispatch)引擎运行中排队边界提交、停机时立即执行。
 // restart=true(Continue 语义)时干预处理完确保引擎运行。
 func (h *Host) handleIntervention(text string) {
 	h.doIntervention(text, false)
@@ -483,7 +499,7 @@ func (h *Host) doIntervention(text string, restart bool) {
 		h.emitEvent(Event{Time: time.Now(), Category: "SYSTEM", Summary: decision.Answer, Level: "info"})
 	}
 	// 任一动作持久化失败 → 保留 PendingSteer(恢复时整条重放重新裁定;
-	// pause/reopen 幂等、dispatch 经新事实重询,重放安全)。
+	// hold/reopen 幂等、dispatch 经新事实重询,重放安全)。
 	actionsFailed := false
 	if decision.Rules != "" {
 		if snap, _, err := h.userRules.AddRuntimeRule(h.runCtx, decision.Rules); err != nil {
@@ -494,8 +510,8 @@ func (h *Host) doIntervention(text string, restart bool) {
 		}
 	}
 
-	if decision.Pause != nil || decision.Reopen != nil || decision.Dispatch != nil {
-		op := controlOp{pause: decision.Pause, reopen: decision.Reopen, dispatch: decision.Dispatch, text: text, facts: facts}
+	if decision.Hold != nil || decision.Reopen != nil || decision.Dispatch != nil {
+		op := controlOp{hold: decision.Hold, reopen: decision.Reopen, dispatch: decision.Dispatch, text: text, facts: facts}
 		if !h.engine.enqueue(op) {
 			// 引擎未运行:立即执行;持久化失败 → 保留 PendingSteer,恢复时重放整条干预。
 			if err := h.engine.applyControlOp(context.Background(), op); err != nil {
@@ -524,9 +540,11 @@ func (h *Host) doIntervention(text string, restart bool) {
 			h.emitEvent(Event{Time: time.Now(), Category: "SYSTEM", Summary: err.Error(), Level: "warn"})
 			return
 		}
-		h.pauser.ReconcileOnResume()
 		h.refreshWriterRestore()
-		h.startEngine(nil)
+		if !h.startEngine(nil) {
+			h.emitEvent(Event{Time: time.Now(), Category: "SYSTEM", Level: "warn",
+				Summary: "Engine 正在完成上一轮停止；干预已保存，请稍后继续"})
+		}
 	}
 }
 
@@ -553,6 +571,87 @@ func (h *Host) Continue(text string) error {
 
 	h.emitEvent(Event{Time: time.Now(), Category: "USER", Summary: "[继续] " + text, Level: "info"})
 	go h.doIntervention(text, true)
+	return nil
+}
+
+// SetAdvanceMode 确定性切换章节推进模式。它只写入用户运行意图，
+// 不调用 Arbiter，也不隐式启动已经暂停的 Engine。
+func (h *Host) SetAdvanceMode(mode domain.ChapterAdvanceMode) error {
+	h.interMu.Lock()
+	defer h.interMu.Unlock()
+	if err := h.store.RunMeta.SetAdvanceMode(mode); err != nil {
+		return err
+	}
+	label := "自动推进"
+	if mode == domain.ChapterAdvanceReview {
+		label = "逐章验收"
+	}
+	summary := "章节推进模式已切换为" + label
+	h.mu.Lock()
+	state := h.lifecycle
+	h.mu.Unlock()
+	if mode == domain.ChapterAdvanceAuto && state != lifecycleRunning && state != lifecycleCompleted {
+		summary += "；当前仍暂停，输入继续指令后恢复运行"
+	}
+	h.emitEvent(Event{Time: time.Now(), Category: "SYSTEM", Summary: summary, Level: "info"})
+	return nil
+}
+
+// AdvanceOneChapter 在逐章验收模式下授权一个精确章节并启动 Engine。
+func (h *Host) AdvanceOneChapter() error {
+	h.interMu.Lock()
+	defer h.interMu.Unlock()
+
+	h.mu.Lock()
+	running, cocreating := h.lifecycle == lifecycleRunning, h.cocreating
+	h.mu.Unlock()
+	if running || h.engine.isRunning() {
+		return fmt.Errorf("创作仍在运行或正在完成暂停，请稍后再执行 /next")
+	}
+	if cocreating {
+		return fmt.Errorf("阶段共创进行中，请先结束共创")
+	}
+	meta, err := h.store.RunMeta.Load()
+	if err != nil {
+		return err
+	}
+	if meta == nil {
+		return fmt.Errorf("RunMeta 未初始化")
+	}
+	if meta.AdvanceMode != domain.ChapterAdvanceReview {
+		return fmt.Errorf("/next 仅用于逐章验收模式，请先执行 /review on")
+	}
+	if meta.AdvanceHold != nil {
+		return fmt.Errorf("仍有一次性暂停意图待处理（%s），请先恢复或完成当前干预", meta.AdvanceHold.Reason)
+	}
+	if err := h.budget.Refuse(); err != nil {
+		return err
+	}
+	progress, err := h.store.Progress.Load()
+	if err != nil {
+		return err
+	}
+	if progress == nil || progress.Phase != domain.PhaseWriting {
+		phase := "<nil>"
+		if progress != nil {
+			phase = string(progress.Phase)
+		}
+		return fmt.Errorf("当前阶段不能授权新章（phase=%s）", phase)
+	}
+	target := progress.NextChapter()
+	if target <= 0 {
+		return fmt.Errorf("无法从当前进度推导下一章")
+	}
+	if err := h.store.RunMeta.GrantAdvancePermit(target); err != nil {
+		return err
+	}
+	h.emitEvent(Event{Time: time.Now(), Category: "SYSTEM",
+		Summary: fmt.Sprintf("已放行第 %d 章；该章提交后会先完成必要的评审与弧/卷结构维护，再次等待放行", target), Level: "info"})
+	h.refreshWriterRestore()
+	if !h.startEngine(nil) {
+		// 许可按章节号持久化且同目标幂等，调用方稍后重试不会重复授权。
+		return fmt.Errorf("章节许可已保存，但 Engine 仍在完成上一轮停止；请稍后重试 /next")
+	}
 	return nil
 }
 
@@ -842,6 +941,12 @@ func (h *Host) Snapshot() UISnapshot {
 	}
 	if meta, _ := h.store.RunMeta.Load(); meta != nil {
 		snap.PendingSteer = meta.PendingSteer
+		snap.AdvanceMode = string(meta.AdvanceMode)
+		snap.AdvancePermitChapter = meta.AdvancePermitChapter
+		if meta.AdvanceHold != nil {
+			snap.HasAdvanceHold = true
+			snap.AdvanceHoldReason = meta.AdvanceHold.Reason
+		}
 	}
 
 	snap.Agents = h.observer.agentSnapshots()
