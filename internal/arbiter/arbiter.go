@@ -22,7 +22,7 @@ import (
 	"time"
 
 	"github.com/voocel/agentcore"
-	"github.com/voocel/agentcore/llm"
+	"github.com/voocel/ainovel-cli/internal/llmutil"
 )
 
 // decideMaxTokens 单次裁定的输出上限;裁定 JSON 很小,大头留给推理模型的思考预算
@@ -49,18 +49,23 @@ func decide[T any](ctx context.Context, model agentcore.ChatModel, systemPrompt,
 		return zero, fmt.Errorf("arbiter: model 未配置")
 	}
 	// 裁定是分诊判断,不需要深思考:能关就关,腾预算给 JSON(与 userrules 同策略)。
-	thinking, _ := llm.ThinkingPolicyFor(model).Resolve(agentcore.ThinkingOff)
+	// 对明确不支持 thinking 的模型,SafeThinkingLevel 会返回空,从而不发送任何 thinking 参数。
+	thinking := llmutil.SafeThinkingLevel(model, agentcore.ThinkingOff)
 
 	messages := []agentcore.Message{
 		{Role: agentcore.RoleSystem, Content: []agentcore.ContentBlock{agentcore.TextBlock(systemPrompt)}},
 		{Role: agentcore.RoleUser, Content: []agentcore.ContentBlock{agentcore.TextBlock(payload)}},
 	}
 
+	var callOpts []agentcore.CallOption
+	callOpts = append(callOpts, agentcore.WithMaxTokens(decideMaxTokens))
+	if thinking != "" {
+		callOpts = append(callOpts, agentcore.WithThinking(thinking))
+	}
+
 	var lastErr error
 	for attempt := 1; attempt <= decideMaxAttempts; attempt++ {
-		resp, err := generateWithRetry(ctx, model, messages,
-			agentcore.WithThinking(thinking),
-			agentcore.WithMaxTokens(decideMaxTokens))
+		resp, err := generateWithRetry(ctx, model, messages, callOpts...)
 		if err != nil {
 			return zero, fmt.Errorf("arbiter: 模型调用失败: %w", err)
 		}

@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/voocel/agentcore"
+	"github.com/voocel/agentcore/llm"
 )
 
 // usageTrackedModel 给 Arbiter 的模型调用接上用量追踪:裁定的 token/成本必须
@@ -35,3 +36,19 @@ func (m *usageTrackedModel) GenerateStream(ctx context.Context, msgs []agentcore
 }
 
 func (m *usageTrackedModel) SupportsTools() bool { return m.inner.SupportsTools() }
+
+// Capabilities 透传底层模型能力，确保 Arbiter 能正确判断 thinking 支持情况。
+func (m *usageTrackedModel) Capabilities() llm.Capabilities {
+	if cp, ok := m.inner.(llm.CapabilityProvider); ok {
+		return cp.Capabilities()
+	}
+	return llm.Capabilities{}
+}
+
+// Info 透传底层模型元数据。
+func (m *usageTrackedModel) Info() llm.ModelInfo {
+	if info, ok := m.inner.(interface{ Info() llm.ModelInfo }); ok {
+		return info.Info()
+	}
+	return llm.ModelInfo{}
+}

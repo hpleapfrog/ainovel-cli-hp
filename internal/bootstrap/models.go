@@ -394,6 +394,13 @@ func (m *failoverModel) Info() llm.ModelInfo {
 	return m.primary.Info()
 }
 
+func (m *failoverModel) Capabilities() llm.Capabilities {
+	if m.primary == nil {
+		return llm.Capabilities{}
+	}
+	return m.primary.Capabilities()
+}
+
 func (m *failoverModel) currentTarget() modelTarget {
 	if m.primary == nil {
 		return modelTarget{}

@@ -17,6 +17,7 @@ import (
 	"github.com/voocel/ainovel-cli/internal/agents/ctxpack"
 	"github.com/voocel/ainovel-cli/internal/agents/guard"
 	"github.com/voocel/ainovel-cli/internal/bootstrap"
+	"github.com/voocel/ainovel-cli/internal/llmutil"
 	"github.com/voocel/ainovel-cli/internal/store"
 	"github.com/voocel/ainovel-cli/internal/tools"
 )
@@ -90,8 +91,7 @@ func roleThinking(cfg bootstrap.Config, role string) agentcore.ThinkingLevel {
 }
 
 func resolvedRoleThinking(model agentcore.ChatModel, cfg bootstrap.Config, role string) agentcore.ThinkingLevel {
-	resolved, _ := ResolveThinkingForModel(model, roleThinking(cfg, role))
-	return resolved
+	return llmutil.SafeThinkingLevel(model, roleThinking(cfg, role))
 }
 
 // BuildWorkers 组装三个 Worker(architect_short/long、writer、editor)为可程序化
@@ -179,7 +179,7 @@ func BuildWorkers(
 	architectStopGuardFactory := func(_, _ string) agentcore.StopGuard {
 		return guard.NewArchitectStopGuard(store, onGuardBlock)
 	}
-	architectThinking, _ := ResolveThinkingForModel(architectModel, roleThinking(cfg, "architect"))
+	architectThinking := llmutil.SafeThinkingLevel(architectModel, roleThinking(cfg, "architect"))
 	architectShort := subagent.Config{
 		Name:               "architect_short",
 		Description:        "短篇规划师：为单卷、单冲突、高密度故事生成紧凑设定与扁平大纲",
@@ -304,11 +304,11 @@ func BuildWorkers(
 	applyThinking := func(role string, level agentcore.ThinkingLevel) {
 		switch role {
 		case "architect":
-			level, _ = ResolveThinkingForModel(models.ForRole("architect"), level)
+			level = llmutil.SafeThinkingLevel(models.ForRole("architect"), level)
 			subagentTool.SetThinkingLevel("architect_short", level)
 			subagentTool.SetThinkingLevel("architect_long", level)
 		case "writer", "editor":
-			level, _ = ResolveThinkingForModel(models.ForRole(role), level)
+			level = llmutil.SafeThinkingLevel(models.ForRole(role), level)
 			subagentTool.SetThinkingLevel(role, level)
 		}
 	}
