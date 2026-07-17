@@ -27,15 +27,16 @@ const (
 )
 
 type setupState struct {
-	focus        setupFocus
-	cursor       int
-	addStep      setupAddStep
-	addInput     string
-	addName      string
-	addType      string
-	addKey       string
-	addURL       string
-	message      string
+	focus    setupFocus
+	cursor   int
+	addStep  setupAddStep
+	addInput string
+	addName  string
+	addType  string
+	addKey   string
+	addURL   string
+	editing  bool // true=编辑已有 provider（走 UpdateProvider）；false=新增（走 AddProvider）
+	message  string
 }
 
 func newSetupState() *setupState {
@@ -85,6 +86,9 @@ func (s *setupState) handleMenuKey(msg tea.KeyMsg, m *Model) (tea.Model, tea.Cmd
 			return m, nil
 		}
 	case tea.KeyRunes:
+		if len(msg.Runes) == 0 || msg.Paste {
+			return m, nil
+		}
 		switch msg.Runes[0] {
 		case 'a':
 			names := m.runtime.ConfiguredProviders()
@@ -108,6 +112,7 @@ func (s *setupState) startAddProvider(name string) {
 	s.addType = ""
 	s.addKey = ""
 	s.addURL = ""
+	s.editing = false
 }
 
 func (s *setupState) handleAddStepKey(msg tea.KeyMsg, m *Model) (tea.Model, tea.Cmd) {
@@ -120,6 +125,7 @@ func (s *setupState) handleAddStepKey(msg tea.KeyMsg, m *Model) (tea.Model, tea.
 
 	switch s.addStep {
 	case setupAddStepType:
+		// 协议类型只允许 ←→ 循环切换，自由键入一律忽略（防止 "openaix" 落盘）
 		switch msg.Type {
 		case tea.KeyLeft, tea.KeyRight:
 			types := []string{"", "openai", "anthropic", "gemini"}
@@ -138,6 +144,20 @@ func (s *setupState) handleAddStepKey(msg tea.KeyMsg, m *Model) (tea.Model, tea.
 			idx = (idx + delta + len(types)) % len(types)
 			s.addInput = types[idx]
 			return m, nil
+		case tea.KeyEnter:
+			return s.handleAddStepEnter(m)
+		default:
+			return m, nil
+		}
+	case setupAddStepName:
+		// 编辑模式下名称锁定（改名=新建，见 handleAddStepEnter 的说明）
+		if s.editing {
+			switch msg.Type {
+			case tea.KeyEnter:
+				return s.handleAddStepEnter(m)
+			default:
+				return m, nil
+			}
 		}
 	}
 
@@ -150,8 +170,13 @@ func (s *setupState) handleAddStepKey(msg tea.KeyMsg, m *Model) (tea.Model, tea.
 			s.addInput = string(r[:len(r)-1])
 		}
 		return m, nil
+	case tea.KeySpace:
+		s.addInput += " "
+		return m, nil
 	case tea.KeyRunes:
-		s.addInput += string(msg.Runes)
+		// 逐 rune 过滤控制字符：bracketed paste 会把 \n\r\t 一并投递，
+		// 写进 config.json 后下次启动 ValidateBase 直接拒绝开机
+		s.addInput = appendSafeInput(s.addInput, msg.Runes)
 		return m, nil
 	}
 	return m, nil
@@ -160,27 +185,44 @@ func (s *setupState) handleAddStepKey(msg tea.KeyMsg, m *Model) (tea.Model, tea.
 func (s *setupState) handleAddStepEnter(m *Model) (tea.Model, tea.Cmd) {
 	val := strings.TrimSpace(s.addInput)
 	switch s.addStep {
-		case setupAddStepName:
-			if val == "" {
-				s.message = "Provider 名称不能为空"
+	case setupAddStepName:
+		if val == "" {
+			s.message = "Provider 名称不能为空"
+			return m, nil
+		}
+		s.addName = val
+		s.addStep = setupAddStepType
+		s.addInput = s.addType
+		return m, nil
+	case setupAddStepType:
+		s.addType = val
+		s.addStep = setupAddStepKey
+		s.addInput = s.addKey
+		return m, nil
+	case setupAddStepKey:
+		s.addKey = val
+		s.addStep = setupAddStepURL
+		s.addInput = s.addURL
+		return m, nil
+	case setupAddStepURL:
+		s.addURL = val
+		// 编辑走 UpdateProvider（空字段保留原值），新增走 AddProvider。
+		// 名称在编辑流中锁定：改名=新建 provider，不支持 rename。
+		if s.editing {
+			if err := m.runtime.UpdateProvider(s.addName, s.addType, s.addKey, s.addURL); err != nil {
+				s.message = err.Error()
+				s.focus = setupFocusAddProvider
+				s.cursor = 0
 				return m, nil
 			}
-			s.addName = val
-			s.addStep = setupAddStepType
-			s.addInput = s.addType
-			return m, nil
-		case setupAddStepType:
-			s.addType = val
-			s.addStep = setupAddStepKey
-			s.addInput = s.addKey
-			return m, nil
-		case setupAddStepKey:
-			s.addKey = val
-			s.addStep = setupAddStepURL
-			s.addInput = s.addURL
-			return m, nil
-		case setupAddStepURL:
-		s.addURL = val
+			s.message = fmt.Sprintf("Provider %q 已更新", s.addName)
+			if s.addKey == "" || s.addURL == "" {
+				s.message += "（留空字段保留原值）"
+			}
+			s.focus = setupFocusAddProvider
+			s.cursor = 0
+			return m, fetchSnapshot(m.runtime)
+		}
 		if err := m.runtime.AddProvider(s.addName, s.addType, s.addKey, s.addURL); err != nil {
 			s.message = err.Error()
 			s.focus = setupFocusAddProvider
@@ -215,6 +257,9 @@ func (s *setupState) handleProviderKey(msg tea.KeyMsg, m *Model) (tea.Model, tea
 		}
 		return m, nil
 	case tea.KeyRunes:
+		if len(msg.Runes) == 0 || msg.Paste {
+			return m, nil
+		}
 		switch msg.Runes[0] {
 		case 'a':
 			s.startAddProvider("")
@@ -251,6 +296,7 @@ func (s *setupState) handleProviderKey(msg tea.KeyMsg, m *Model) (tea.Model, tea
 			s.addURL = u
 			s.addStep = setupAddStepName
 			s.addInput = name
+			s.editing = true
 			s.focus = setupFocusAddStep
 			return m, nil
 		case 'k':
@@ -268,6 +314,7 @@ func (s *setupState) handleProviderKey(msg tea.KeyMsg, m *Model) (tea.Model, tea
 			s.addStep = setupAddStepKey
 			s.addInput = ""
 			s.addKey = ""
+			s.editing = true
 			s.focus = setupFocusAddStep
 			return m, nil
 		case 'u':
@@ -285,6 +332,7 @@ func (s *setupState) handleProviderKey(msg tea.KeyMsg, m *Model) (tea.Model, tea
 			s.addStep = setupAddStepURL
 			s.addInput = ""
 			s.addURL = ""
+			s.editing = true
 			s.focus = setupFocusAddStep
 			return m, nil
 		}
@@ -339,7 +387,7 @@ func renderSetupMenu(w int, state *setupState, rt modelRuntime) string {
 	}
 
 	if state.message != "" {
-		lines = append(lines, lipgloss.NewStyle().Foreground(colorSuccess).Render("  "+state.message))
+		lines = append(lines, lipgloss.NewStyle().Foreground(bodyTextColor).Render("  "+state.message))
 		lines = append(lines, "")
 	}
 
@@ -406,7 +454,7 @@ func renderProviderListModal(w int, state *setupState, rt modelRuntime) string {
 	lines = append(lines, "")
 
 	if state.message != "" {
-		lines = append(lines, lipgloss.NewStyle().Foreground(colorSuccess).Render("  "+state.message))
+		lines = append(lines, lipgloss.NewStyle().Foreground(bodyTextColor).Render("  "+state.message))
 		lines = append(lines, "")
 	}
 
@@ -502,10 +550,23 @@ func valueForStep(s *setupState, step setupAddStep) string {
 }
 
 func maskAPIKey(key string) string {
-	if len(key) <= 8 {
+	r := []rune(key)
+	if len(r) <= 8 {
 		return "****"
 	}
-	return key[:4] + "****" + key[len(key)-4:]
+	return string(r[:4]) + "****" + string(r[len(r)-4:])
+}
+
+// appendSafeInput 只追加可打印 rune（>=0x20 且非 DEL）。
+// bracketed paste 会把 \n\r\t 等控制字符一并投递，原样写进 config.json
+// 会让下次启动的文本校验直接拒绝开机（host.New → ValidateBase）。
+func appendSafeInput(s string, runes []rune) string {
+	for _, r := range runes {
+		if r >= 0x20 && r != 0x7f {
+			s += string(r)
+		}
+	}
+	return s
 }
 
 func renderModalBox(w int, title string, lines []string) string {
@@ -532,84 +593,4 @@ func renderModalBox(w int, title string, lines []string) string {
 	}
 
 	return strings.Join(append(append([]string{topBorder}, body...), bottomBorder), "\n")
-}
-
-func (s *setupState) handleEditStep(msg tea.KeyMsg, m *Model) (tea.Model, tea.Cmd) {
-	if msg.Type == tea.KeyEsc {
-		s.focus = setupFocusAddProvider
-		s.cursor = 0
-		s.message = ""
-		return m, nil
-	}
-
-	switch s.addStep {
-	case setupAddStepType:
-		if msg.Type == tea.KeyLeft || msg.Type == tea.KeyRight {
-			types := []string{"", "openai", "anthropic", "gemini"}
-			cur := s.addInput
-			idx := -1
-			for i, t := range types {
-				if t == cur {
-					idx = i
-					break
-				}
-			}
-			delta := 1
-			if msg.Type == tea.KeyLeft {
-				delta = -1
-			}
-			idx = (idx + delta + len(types)) % len(types)
-			s.addInput = types[idx]
-			return m, nil
-		}
-	}
-
-	switch msg.Type {
-	case tea.KeyEnter:
-		val := strings.TrimSpace(s.addInput)
-		switch s.addStep {
-		case setupAddStepName:
-			if val == "" {
-				s.message = "名称不能为空"
-				return m, nil
-			}
-			s.addName = val
-			s.addStep = setupAddStepType
-			s.addInput = s.addType
-			return m, nil
-		case setupAddStepType:
-			s.addType = val
-			s.addStep = setupAddStepKey
-			s.addInput = s.addKey
-			return m, nil
-		case setupAddStepKey:
-			s.addKey = val
-			s.addStep = setupAddStepURL
-			s.addInput = s.addURL
-			return m, nil
-		case setupAddStepURL:
-			s.addURL = val
-			name := s.addName
-			if err := m.runtime.UpdateProvider(name, s.addType, s.addKey, s.addURL); err != nil {
-				s.message = err.Error()
-				s.focus = setupFocusAddProvider
-				s.cursor = 0
-			} else {
-				s.message = fmt.Sprintf("Provider %q 已更新", name)
-				s.focus = setupFocusAddProvider
-				s.cursor = 0
-			}
-			return m, fetchSnapshot(m.runtime)
-		}
-	case tea.KeyBackspace:
-		if len(s.addInput) > 0 {
-			r := []rune(s.addInput)
-			s.addInput = string(r[:len(r)-1])
-		}
-		return m, nil
-	case tea.KeyRunes:
-		s.addInput += string(msg.Runes)
-		return m, nil
-	}
-	return m, nil
 }

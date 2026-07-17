@@ -170,7 +170,7 @@ func renderStartupModeBar(width int, mode startupMode) string {
 		Render("·")
 	line := title + " " + divider + " " + quick + "  " + cocreate
 	return lipgloss.NewStyle().
-		Width(width - 2).
+		Width(width-2).
 		Padding(0, 1).
 		Render(line)
 }

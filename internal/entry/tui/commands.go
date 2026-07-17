@@ -126,6 +126,7 @@ func commandRegistryInstance() commandRegistry {
 				s.addName = name
 				s.addType = t
 				s.addURL = u
+				s.editing = true
 				m.setup = s
 				m.textarea.Blur()
 				return m, nil

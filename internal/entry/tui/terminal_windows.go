@@ -21,7 +21,7 @@ var (
 	procFillConsoleOutputCharacterW  = kernel32.NewProc("FillConsoleOutputCharacterW")
 	procFillConsoleOutputAttribute   = kernel32.NewProc("FillConsoleOutputAttribute")
 	procSetConsoleCursorPosition     = kernel32.NewProc("SetConsoleCursorPosition")
-	procGetConsoleScreenBufferInfo    = kernel32.NewProc("GetConsoleScreenBufferInfo")
+	procGetConsoleScreenBufferInfo   = kernel32.NewProc("GetConsoleScreenBufferInfo")
 )
 
 type consoleCoord struct{ X, Y int16 }
@@ -53,8 +53,9 @@ func initWindowsConsole() error {
 	enableVTOnAllHandles()
 
 	if isLegacyConsole() {
-		createAltScreenBuffer()
-		usesFallback = true
+		// 只有备用缓冲区真正创建成功才降级：MSYS/MinTTY 无 console 可创建，
+		// 失败时保持 bubbletea 原生 AltScreen，不误判为 legacy 渲染
+		usesFallback = createAltScreenBuffer()
 	}
 	return nil
 }
@@ -125,7 +126,7 @@ func enableVTOnHandle(h windows.Handle) {
 	_ = windows.SetConsoleMode(h, want)
 }
 
-func createAltScreenBuffer() {
+func createAltScreenBuffer() bool {
 	const (
 		genericRead  = 0x80000000
 		genericWrite = 0x40000000
@@ -136,7 +137,7 @@ func createAltScreenBuffer() {
 		genericRead|genericWrite, shareMode, 0, 1, 0,
 	)
 	if h == 0 || h == ^uintptr(0) {
-		return
+		return false
 	}
 
 	var info consoleScreenBufferInfo
@@ -153,14 +154,17 @@ func createAltScreenBuffer() {
 	total := uint32(x * y)
 	var written uint32
 	origin := consoleCoord{0, 0}
-	procFillConsoleOutputCharacterW.Call(h, uintptr(' '), uintptr(total), uintptr(unsafe.Pointer(&origin)), uintptr(unsafe.Pointer(&written)))
-	procFillConsoleOutputAttribute.Call(h, 7, uintptr(total), uintptr(unsafe.Pointer(&origin)), uintptr(unsafe.Pointer(&written)))
-	procSetConsoleCursorPosition.Call(h, uintptr(unsafe.Pointer(&origin)))
+	// Win32 COORD 是按值传递的 32 位打包值（低 16 位 X、高 16 位 Y），不是指针
+	coordValue := uintptr(uint32(uint16(origin.Y))<<16 | uint32(uint16(origin.X)))
+	procFillConsoleOutputCharacterW.Call(h, uintptr(' '), uintptr(total), coordValue, uintptr(unsafe.Pointer(&written)))
+	procFillConsoleOutputAttribute.Call(h, 7, uintptr(total), coordValue, uintptr(unsafe.Pointer(&written)))
+	procSetConsoleCursorPosition.Call(h, coordValue)
 
 	origStdout = os.Stdout
 	os.Stdout = os.NewFile(uintptr(h), "CONOUT$")
 	procSetConsoleActiveScreenBuffer.Call(h)
 	altBufHandle = windows.Handle(h)
+	return true
 }
 
 func needsWin32AltScreen() bool {

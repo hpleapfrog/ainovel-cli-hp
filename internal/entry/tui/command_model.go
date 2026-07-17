@@ -19,6 +19,7 @@ type modelRuntime interface {
 	SetRoleThinking(role, level string) error
 	AddProviderModel(provider, model string) error
 	RemoveProviderModel(provider, model string) error
+	RenameProviderModel(provider, oldName, newName string) error
 	AddProvider(name, apiType, apiKey, baseURL string) error
 	RemoveProvider(name string) error
 	UpdateProvider(name, apiType, apiKey, baseURL string) error
@@ -354,9 +355,9 @@ func (m Model) handleModelEditInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			state.message = ""
 			return m, nil
 		}
-		m.runtime.RemoveProviderModel(state.provider(), state.editingOld)
-		if err := m.runtime.AddProviderModel(state.provider(), newName); err != nil {
-			m.runtime.AddProviderModel(state.provider(), state.editingOld)
+		// 重命名同步所有引用点（default/角色/fallback），否则旧名会被
+		// CandidateModels 从引用复活、角色仍指旧模型
+		if err := m.runtime.RenameProviderModel(state.provider(), state.editingOld, newName); err != nil {
 			state.message = err.Error()
 			return m, nil
 		}
@@ -376,8 +377,11 @@ func (m Model) handleModelEditInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			state.addInput = string(r[:len(r)-1])
 		}
 		return m, nil
+	case tea.KeySpace:
+		state.addInput += " "
+		return m, nil
 	case tea.KeyRunes:
-		state.addInput += string(msg.Runes)
+		state.addInput = appendSafeInput(state.addInput, msg.Runes)
 		return m, nil
 	}
 	return m, nil
@@ -412,8 +416,11 @@ func (m Model) handleModelAddInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			state.addInput = string(r[:len(r)-1])
 		}
 		return m, nil
+	case tea.KeySpace:
+		state.addInput += " "
+		return m, nil
 	case tea.KeyRunes:
-		state.addInput += string(msg.Runes)
+		state.addInput = appendSafeInput(state.addInput, msg.Runes)
 		return m, nil
 	default:
 		return m, nil
@@ -422,6 +429,9 @@ func (m Model) handleModelAddInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m Model) handleModelSwitchRune(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	state := m.modelSwitch
+	if len(msg.Runes) == 0 || msg.Paste {
+		return m, nil
+	}
 	r := msg.Runes[0]
 	if state.focus == modelFocusProvider {
 		switch r {
@@ -540,28 +550,30 @@ func (m Model) handleProviderInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// Type selection step: cycle through provider types
-	if state.provStep == provStepType && (msg.Type == tea.KeyLeft || msg.Type == tea.KeyRight) {
-		var types []string
-		if state.provAct == provActionAdd {
-			types = providerTypeOptions
-		} else {
-			types = providerTypeOptions
-		}
-		cur := state.provInput
-		idx := -1
-		for i, t := range types {
-			if t == cur {
-				idx = i
-				break
+	// 编辑模式下名称锁定：改名=新建 provider，不支持 rename（与 setup 向导一致）
+	if state.provAct == provActionEdit && state.provStep == provStepName && msg.Type != tea.KeyEnter {
+		return m, nil
+	}
+
+	// 协议类型只允许 ←→ 循环切换；其余键（含自由键入）一律忽略，防止 "openaix" 落盘
+	if state.provStep == provStepType && msg.Type != tea.KeyEnter {
+		if msg.Type == tea.KeyLeft || msg.Type == tea.KeyRight {
+			types := providerTypeOptions
+			cur := state.provInput
+			idx := -1
+			for i, t := range types {
+				if t == cur {
+					idx = i
+					break
+				}
 			}
+			delta := 1
+			if msg.Type == tea.KeyLeft {
+				delta = -1
+			}
+			idx = (idx + delta + len(types)) % len(types)
+			state.provInput = types[idx]
 		}
-		delta := 1
-		if msg.Type == tea.KeyLeft {
-			delta = -1
-		}
-		idx = (idx + delta + len(types)) % len(types)
-		state.provInput = types[idx]
 		return m, nil
 	}
 
@@ -624,8 +636,11 @@ func (m Model) handleProviderInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			state.provInput = string(r[:len(r)-1])
 		}
 		return m, nil
+	case tea.KeySpace:
+		state.provInput += " "
+		return m, nil
 	case tea.KeyRunes:
-		state.provInput += string(msg.Runes)
+		state.provInput = appendSafeInput(state.provInput, msg.Runes)
 		return m, nil
 	default:
 		return m, nil
@@ -663,11 +678,7 @@ func renderProviderInput(state *modelSwitchState) []string {
 		if s == state.provStep {
 			display := state.provInput
 			if s == provStepAPIKey && display != "" {
-				if len(display) > 8 {
-					display = display[:4] + "****" + display[len(display)-4:]
-				} else {
-					display = "****"
-				}
+				display = maskAPIKey(display)
 			}
 			if display == "" {
 				display = "▌"
