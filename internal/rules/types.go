@@ -41,6 +41,11 @@ type Structured struct {
 	ForbiddenChars   []string       `json:"forbidden_chars,omitempty"`
 	ForbiddenPhrases []string       `json:"forbidden_phrases,omitempty"`
 	FatigueWords     map[string]int `json:"fatigue_words,omitempty"`
+	// POVPerson 叙述人称约束；当前仅 "third"（第三人称）有机械检查——
+	// 剥离对白/引语后，叙述段第一人称代词超阈值即违规（见 checker.go）。
+	// "first" 刻意不提升：第一人称小说里 他/她 天然高频指代他人，
+	// 反向检查不可机械化，人称意愿除"明确第三人称"外一律走 preferences。
+	POVPerson string `json:"pov_person,omitempty"`
 }
 
 // IsEmpty 用于判定是否完全没有结构化规则；checker 可据此跳过。
@@ -48,7 +53,8 @@ func (s Structured) IsEmpty() bool {
 	return s.Genre == "" &&
 		len(s.ForbiddenChars) == 0 &&
 		len(s.ForbiddenPhrases) == 0 &&
-		len(s.FatigueWords) == 0
+		len(s.FatigueWords) == 0 &&
+		s.POVPerson == ""
 }
 
 // Severity 标记 Violation 的严重等级。
@@ -57,6 +63,7 @@ func (s Structured) IsEmpty() bool {
 //	forbidden_chars 出现             -> Error
 //	forbidden_phrases 出现           -> Error
 //	fatigue_words 超阈值             -> Warning
+//	pov_person 第三人称约束超阈值     -> Warning
 type Severity string
 
 const (
@@ -70,7 +77,7 @@ const (
 // editor 在审阅时把这些事实映射到现有七维（aesthetic/pacing/character/consistency），
 // 由 LLM 自主决定是否升级 verdict 触发 polish/rewrite。
 type Violation struct {
-	Rule     string   `json:"rule"`             // forbidden_chars / forbidden_phrases / fatigue_words
+	Rule     string   `json:"rule"`             // forbidden_chars / forbidden_phrases / fatigue_words / pov_person
 	Target   string   `json:"target,omitempty"` // 具体违规对象（哪个词/字符）
 	Limit    any      `json:"limit,omitempty"`  // 阈值；fatigue_words=int / forbidden_*=空
 	Actual   any      `json:"actual"`           // 实际值：出现次数

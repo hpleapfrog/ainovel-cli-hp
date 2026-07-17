@@ -225,11 +225,13 @@ structured 只允许以下字段(没有别的字段):
 - forbidden_chars: [字符串](禁止出现的字符)
 - forbidden_phrases: [字符串](禁止出现的短语,字面精确匹配)
 - fatigue_words: {词:整数}(疲劳词→每章出现次数上限)
+- pov_person: 字符串,只允许 "third"(第三人称叙述)
 
 【保守提升——最重要】
 - 只有用户明确、无歧义时才写入 structured。
 - forbidden_chars/forbidden_phrases 是 error 级:只有「不要出现X/禁用X/别写X」这类明确禁止才提升。
 - fatigue_words:只有同时给出「明确的词」和「明确的次数阈值」才提升;「少用X/别老用X」没给数字的放进 preferences,绝不自己发明阈值。
+- pov_person:只有「全程第三人称/必须第三人称叙事/禁止第一人称叙述」这类明确的第三人称要求才提升为 "third";「用第一人称写」等其他人称意愿没有机械检查,一律放 preferences。
 - 字数/篇幅类意愿(「每章3000字」「短一点」)一律放 preferences:章节长度是叙事节奏问题,由创作时自然把握,不做机械检查。
 - 不可机械检查、无明确阈值、依赖语境的,一律放 preferences。
 - 原则:宁可漏进 structured,也不要错误提升(那会每章误报)。

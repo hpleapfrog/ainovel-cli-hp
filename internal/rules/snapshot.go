@@ -33,10 +33,11 @@ const (
 )
 
 // SnapshotVersion 是当前快照 schema 版本，便于未来迁移。
+// v3：structured 增加 pov_person（第三人称叙述的机械检查，仅 "third" 有机械语义）。
 // v2：chapter_words 退出 structured（字数是语义软约束，走 preferences）。
-// v1 快照直接加载兼容：未知字段被反序列化忽略，下次叠加保存时自然收敛为 v2；
+// v1/v2 快照直接加载兼容：未知字段被反序列化忽略，下次叠加保存时自然收敛为当前版本；
 // 刻意不做"版本不符即重建"——那会丢掉 AddRuntimeRule 运行中追加的不可再生规则。
-const SnapshotVersion = 2
+const SnapshotVersion = 3
 
 // Candidate 是单个来源归一化后的候选结果。
 //
@@ -87,6 +88,9 @@ func BuildSnapshot(cands []Candidate) Snapshot {
 		if len(s.FatigueWords) > 0 {
 			snap.Structured.FatigueWords = mergeFatigueWords(snap.Structured.FatigueWords, s.FatigueWords)
 		}
+		if s.POVPerson != "" {
+			snap.Structured.POVPerson = s.POVPerson
+		}
 
 		if p := strings.TrimSpace(c.Preferences); p != "" {
 			if src := strings.TrimSpace(c.Source); src != "" {
@@ -126,6 +130,9 @@ func OverlaySnapshot(base Snapshot, cand Candidate) Snapshot {
 	}
 	if len(s.FatigueWords) > 0 {
 		out.Structured.FatigueWords = mergeFatigueWords(cloneFatigue(out.Structured.FatigueWords), s.FatigueWords)
+	}
+	if s.POVPerson != "" {
+		out.Structured.POVPerson = s.POVPerson
 	}
 	if p := strings.TrimSpace(cand.Preferences); p != "" {
 		section := p
@@ -198,6 +205,9 @@ func sanitizeStructured(s Structured) Structured {
 	out := Structured{}
 	if g := strings.TrimSpace(s.Genre); g != "" {
 		out.Genre = g
+	}
+	if p := strings.TrimSpace(s.POVPerson); p != "" {
+		out.POVPerson = p
 	}
 	out.ForbiddenChars = nonEmptyStrings(s.ForbiddenChars)
 	out.ForbiddenPhrases = nonEmptyStrings(s.ForbiddenPhrases)

@@ -3,6 +3,7 @@ package userrules
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/voocel/agentcore"
@@ -195,5 +196,43 @@ func TestNormalize_FeedbackRetryExhaustsThenDegrades(t *testing.T) {
 	}
 	if model.calls != normalizeMaxAttempts {
 		t.Fatalf("应尝试 %d 次，实际 %d", normalizeMaxAttempts, model.calls)
+	}
+}
+
+// pov_person 是 structured 的合法字段：归一化输出的 JSON 形状与提示词白名单保持一致。
+func TestParseNormalizerJSON_POVPerson(t *testing.T) {
+	raw := `{"structured":{"pov_person":"third"},"preferences":"文风克制","uncertain":[]}`
+	out, ok := parseNormalizerJSON(raw)
+	if !ok {
+		t.Fatal("应解析成功")
+	}
+	if out.Structured.POVPerson != "third" {
+		t.Fatalf("pov_person 解析错误：%+v", out.Structured)
+	}
+}
+
+// 提示词必须声明 pov_person 白名单与保守提升规则，否则模型不知道这个字段存在。
+func TestNormalizerPromptDeclaresPOVPerson(t *testing.T) {
+	if !strings.Contains(normalizerSystemPrompt, "pov_person") {
+		t.Fatal("归一化提示词缺少 pov_person 字段声明")
+	}
+	if !strings.Contains(normalizerSystemPrompt, `"third"`) {
+		t.Fatal("归一化提示词缺少 pov_person 取值约束")
+	}
+}
+
+// 模拟归一化器对「全程第三人称」的提升：scriptedModel 返回含 pov_person 的 JSON。
+func TestNormalize_POVPersonElevated(t *testing.T) {
+	model := &scriptedModel{replies: []string{
+		`{"structured":{"pov_person":"third"},"preferences":"","uncertain":[]}`,
+	}}
+	n := NewNormalizer(model)
+
+	cand := n.Normalize(t.Context(), "project:pov.md", "全程第三人称，禁止第一人称叙述")
+	if cand.Degraded {
+		t.Fatal("合法 JSON 不应降级")
+	}
+	if cand.Structured.POVPerson != "third" {
+		t.Fatalf("应提升 pov_person=third，got %+v", cand.Structured)
 	}
 }

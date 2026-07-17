@@ -1,6 +1,7 @@
 package rules
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -93,5 +94,46 @@ func TestSystemDefaults_MatchesLegacyDefaultMD(t *testing.T) {
 	}
 	if len(d.FatigueWords) != 16 {
 		t.Fatalf("默认疲劳词应为 16 条，得到 %d", len(d.FatigueWords))
+	}
+}
+
+func TestBuildSnapshot_POVPersonOverride(t *testing.T) {
+	// 高优先级空值不覆盖；低优先级有值时保留
+	snap := BuildSnapshot([]Candidate{
+		{Source: "global:g.md", Structured: Structured{POVPerson: "third"}},
+		{Source: "project:p.md", Structured: Structured{POVPerson: ""}}, // 空占位 → 不覆盖
+	})
+	if snap.Structured.POVPerson != "third" {
+		t.Fatalf("空 pov_person 不应覆盖，期望 third，得到 %q", snap.Structured.POVPerson)
+	}
+}
+
+func TestOverlaySnapshot_POVPerson(t *testing.T) {
+	base := BuildSnapshot([]Candidate{
+		{Source: "system_defaults"},
+	})
+	merged := OverlaySnapshot(base, Candidate{
+		Source:     "runtime_update",
+		Structured: Structured{POVPerson: "third"},
+	})
+	if merged.Structured.POVPerson != "third" {
+		t.Fatalf("叠加后应为 third，得到 %q", merged.Structured.POVPerson)
+	}
+	// 再次叠加空值不清除已有约束
+	merged2 := OverlaySnapshot(merged, Candidate{Source: "runtime_update2"})
+	if merged2.Structured.POVPerson != "third" {
+		t.Fatalf("空候选不应清除 pov_person，得到 %q", merged2.Structured.POVPerson)
+	}
+}
+
+func TestSnapshot_OldVersionLoadsCompat(t *testing.T) {
+	// v2 及更早快照没有 pov_person 字段：反序列化忽略未知/缺失字段，直接加载兼容，
+	// 下次保存自然收敛为当前版本（不做"版本不符即重建"）。
+	var s Snapshot
+	if err := json.Unmarshal([]byte(`{"version":2,"status":"ready","structured":{"genre":"都市"},"preferences":"x"}`), &s); err != nil {
+		t.Fatalf("旧版快照应能加载: %v", err)
+	}
+	if s.Structured.Genre != "都市" || s.Structured.POVPerson != "" {
+		t.Fatalf("旧字段应保留、新字段缺失为零值, got %+v", s.Structured)
 	}
 }

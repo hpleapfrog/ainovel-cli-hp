@@ -144,3 +144,86 @@ func TestCheck_EmptyTargetsSkipped(t *testing.T) {
 		t.Errorf("empty targets should be skipped, got %+v", vs)
 	}
 }
+
+// ── pov_person ──
+
+func TestCheck_POVThirdPersonViolation(t *testing.T) {
+	// 叙述段（无引号）出现 4 次第一人称词根 → 超阈值 warning
+	text := "他走进客栈。我想起了一件事。他坐下。我问自己。他喝酒。我觉得不对劲。我决定了。"
+	vs := Check(text, Structured{POVPerson: "third"})
+	v := findViolation(vs, "pov_person", "third")
+	if v == nil {
+		t.Fatal("expected pov_person violation")
+	}
+	if v.Severity != SeverityWarning {
+		t.Errorf("severity=%s, want warning", v.Severity)
+	}
+	if v.Limit != povFirstPersonLimit {
+		t.Errorf("limit=%v, want %d", v.Limit, povFirstPersonLimit)
+	}
+	if v.Actual != 4 {
+		t.Errorf("actual=%v, want 4", v.Actual)
+	}
+}
+
+func TestCheck_POVDialogueNotCounted(t *testing.T) {
+	// 对白内的第一人称不计入叙述段
+	text := "他走进客栈。“我早就知道你会来。”他说。“我们的事，改天再谈。”她笑了笑。"
+	vs := Check(text, Structured{POVPerson: "third"})
+	if len(vs) != 0 {
+		t.Errorf("对白内的第一人称不应违规, got %+v", vs)
+	}
+}
+
+func TestCheck_POVAtLimitPasses(t *testing.T) {
+	// 恰好 3 次（阈值）→ 不违规
+	text := "他笑。我想。他走。我看。他坐。我等。"
+	vs := Check(text, Structured{POVPerson: "third"})
+	if len(vs) != 0 {
+		t.Errorf("at limit should not violate (limit 3 actual 3), got %+v", vs)
+	}
+}
+
+func TestCheck_POVPluralNoDoubleCount(t *testing.T) {
+	// "我们" 按词根计一次，不复数双计
+	text := "我们出发。我们前进。我们胜利。我们回家。"
+	vs := Check(text, Structured{POVPerson: "third"})
+	v := findViolation(vs, "pov_person", "third")
+	if v == nil {
+		t.Fatal("expected pov_person violation")
+	}
+	if v.Actual != 4 {
+		t.Errorf("actual=%v, want 4 (词根计数,不复数双计)", v.Actual)
+	}
+}
+
+func TestCheck_POVNonThirdNoCheck(t *testing.T) {
+	text := "我想。我看。我决定。我离开。我沉默。"
+	for _, person := range []string{"", "first"} {
+		if vs := Check(text, Structured{POVPerson: person}); len(vs) != 0 {
+			t.Errorf("person=%q 不应触发 pov_person 检查, got %+v", person, vs)
+		}
+	}
+}
+
+func TestCheck_POVUnclosedQuoteFailOpen(t *testing.T) {
+	// 引号未闭合：其后内容按引语处理，宁可漏报不误报
+	text := "他说：“我想起来了，我决定，我必须，我要。"
+	vs := Check(text, Structured{POVPerson: "third"})
+	if len(vs) != 0 {
+		t.Errorf("未闭合引号应 fail-open, got %+v", vs)
+	}
+}
+
+func TestCheck_POVNestedQuotes(t *testing.T) {
+	// 嵌套引号内的第一人称同样剥离
+	text := "他回忆道：“她当时说『我们一起走吧』，我没应声。”他叹了口气。我想起来了。我觉得。我决定。我必须走。"
+	vs := Check(text, Structured{POVPerson: "third"})
+	v := findViolation(vs, "pov_person", "third")
+	if v == nil {
+		t.Fatal("expected pov_person violation")
+	}
+	if v.Actual != 4 {
+		t.Errorf("actual=%v, want 4 (嵌套引号内不计)", v.Actual)
+	}
+}

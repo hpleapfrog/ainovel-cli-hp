@@ -88,6 +88,7 @@
 | `forbidden_chars` | aesthetic | severity=error → 至少 issue 一条，verdict 升级 polish |
 | `forbidden_phrases` | aesthetic | 同上 |
 | `fatigue_words` | aesthetic | severity=warning → issue 一条，evidence 引用原文 |
+| `pov_person` | continuity | severity=warning → issue 一条，evidence 引用原文的第一人称叙述段；仅 "third"（第三人称约束）有机械检查 |
 
 同一位置还有 `continuity_issues`（commit 时对状态/关系/出场申报的机械检测结果，无发现时该字段缺省），同样只映射进现有七维：
 
