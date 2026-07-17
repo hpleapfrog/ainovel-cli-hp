@@ -15,6 +15,31 @@ type ForeshadowEntry struct {
 	PlantedAt   int    `json:"planted_at"`
 	Status      string `json:"status"` // planted / advanced / resolved
 	ResolvedAt  int    `json:"resolved_at,omitempty"`
+	// LastTouchedAt 是最近一次被触及（埋设或推进）的章节号。
+	// 没有这个字段时，"距上次推进多久"对模型、召回与 diag 都不可计算
+	// （advance 只翻转 Status，推进史会丢）。
+	LastTouchedAt int `json:"last_touched_at,omitempty"`
+}
+
+// DormantSince 返回伏笔最近一次被触及的章节号；旧数据无 LastTouchedAt 时回退到埋设章。
+// 账龄/停滞口径统一走这里：休眠期 = 当前章 - DormantSince。
+func (e ForeshadowEntry) DormantSince() int {
+	if e.LastTouchedAt > 0 {
+		return e.LastTouchedAt
+	}
+	return e.PlantedAt
+}
+
+// ForeshadowDueChapters 是「伏笔该推进了」的共享阈值（章）：
+// Writer 的 foreshadow_due 清单与 diag 的 StaleForeshadow 停滞下限共用，
+// 线上提醒与离线诊断看到的是同一把尺子（与 editor.md 评审的"5 章未推进"口径对齐）。
+const ForeshadowDueChapters = 5
+
+// ForeshadowStatus 是注入给 LLM 的伏笔视图：台账原始字段 + 代码派生的休眠章数。
+// 休眠章数由注入方按当前章现算，不持久化（它是"相对当前章的值"，不是台账事实）。
+type ForeshadowStatus struct {
+	ForeshadowEntry
+	ChaptersSinceLastTouch int `json:"chapters_since_last_touch"`
 }
 
 // ForeshadowUpdate 伏笔增量操作。

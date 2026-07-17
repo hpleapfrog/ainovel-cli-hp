@@ -8,6 +8,8 @@ import (
 )
 
 // StaleForeshadow 检测长期未推进的伏笔。
+// 口径：planted 和 advanced 都查（advanced 只代表推进过一次，之后同样可能烂尾）；
+// 休眠期从最近一次触及（DormantSince）起算，不是从埋设章起算。
 func StaleForeshadow(snap *Snapshot) []Finding {
 	if snap.Progress == nil || len(snap.Foreshadow) == 0 {
 		return nil
@@ -17,12 +19,12 @@ func StaleForeshadow(snap *Snapshot) []Finding {
 
 	var stale []string
 	for _, f := range snap.Foreshadow {
-		if f.Status != "planted" {
+		if f.Status != "planted" && f.Status != "advanced" {
 			continue
 		}
-		gap := latest - f.PlantedAt
+		gap := latest - f.DormantSince()
 		if gap > threshold {
-			stale = append(stale, fmt.Sprintf("%s(ch%d埋下,已过%d章)", f.ID, f.PlantedAt, gap))
+			stale = append(stale, fmt.Sprintf("%s(ch%d埋下,已%d章未推进)", f.ID, f.PlantedAt, gap))
 		}
 	}
 	if len(stale) == 0 {

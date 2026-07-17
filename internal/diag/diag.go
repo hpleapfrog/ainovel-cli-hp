@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 
+	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/store"
 )
 
@@ -20,7 +21,6 @@ const (
 	ThresholdPayoffMissRate   = 0.4 // PayoffMissPattern: payoff 未兑现率上限
 	ThresholdCompassDrift     = 15  // CompassDrift: 指南针未更新章数上限
 	ThresholdTimelineGapRate  = 0.3 // TimelineGaps: 缺失率容忍上限
-	ThresholdForeshadowMin    = 8   // StaleForeshadow: 伏笔停滞最小章数
 )
 
 // allRules 按 flow → quality → planning → context 排列。
@@ -115,12 +115,13 @@ func buildStats(snap *Snapshot) Stats {
 		st.AvgReviewScore = totalScore / float64(dimCount)
 	}
 
-	// 伏笔统计
+	// 伏笔统计（停滞口径与 StaleForeshadow 规则一致：planted/advanced 都查，
+	// 休眠期从最近一次触及起算）
 	latest := snap.LatestCompleted()
 	for _, f := range snap.Foreshadow {
 		if f.Status == "planted" || f.Status == "advanced" {
 			st.ForeshadowOpen++
-			if f.Status == "planted" && latest-f.PlantedAt > staleForeshadowThreshold(st.CompletedChapters) {
+			if latest-f.DormantSince() > staleForeshadowThreshold(st.CompletedChapters) {
 				st.ForeshadowStale++
 			}
 		}
@@ -137,10 +138,12 @@ func sortFindings(findings []Finding) {
 }
 
 // staleForeshadowThreshold 根据总章节数计算伏笔停滞阈值。
+// 下限与 writer 的 foreshadow_due 共用 domain.ForeshadowDueChapters——线上提醒与
+// 离线诊断同一把尺子；长篇按已完成 1/3 放宽（长线伏笔天然周期更长）。
 func staleForeshadowThreshold(completedChapters int) int {
 	t := completedChapters / 3
-	if t < ThresholdForeshadowMin {
-		return ThresholdForeshadowMin
+	if t < domain.ForeshadowDueChapters {
+		return domain.ForeshadowDueChapters
 	}
 	return t
 }

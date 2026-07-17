@@ -133,6 +133,7 @@ func (s *WorldStore) UpdateForeshadow(chapter int, updates []domain.ForeshadowUp
 					}
 					if entries[i].PlantedAt == 0 {
 						entries[i].PlantedAt = chapter
+						entries[i].LastTouchedAt = chapter
 					}
 					if entries[i].Status == "" {
 						entries[i].Status = "planted"
@@ -141,14 +142,16 @@ func (s *WorldStore) UpdateForeshadow(chapter int, updates []domain.ForeshadowUp
 				}
 				idx[u.ID] = len(entries)
 				entries = append(entries, domain.ForeshadowEntry{
-					ID:          u.ID,
-					Description: u.Description,
-					PlantedAt:   chapter,
-					Status:      "planted",
+					ID:            u.ID,
+					Description:   u.Description,
+					PlantedAt:     chapter,
+					Status:        "planted",
+					LastTouchedAt: chapter,
 				})
 			case "advance":
 				if i, ok := idx[u.ID]; ok {
 					entries[i].Status = "advanced"
+					entries[i].LastTouchedAt = chapter
 				}
 			case "resolve":
 				if i, ok := idx[u.ID]; ok {

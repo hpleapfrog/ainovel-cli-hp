@@ -2,6 +2,7 @@ package tools
 
 import (
 	"slices"
+	"sort"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/rules"
@@ -441,6 +442,12 @@ func (t *ContextTool) buildChapterWorkingMemory(envelope *chapterContextEnvelope
 			envelope.Working["previous_tail"] = string(runes)
 		}
 	}
+
+	// 伏笔到期清单：休眠超过 domain.ForeshadowDueChapters 的活跃伏笔，按最久未动降序。
+	// 纯事实字段（不含指令）——哪条该推进，writer 不用再脑算章数。
+	if due := foreshadowDue(state.foreshadow, state.chapter); len(due) > 0 {
+		envelope.Working["foreshadow_due"] = due
+	}
 }
 
 func (t *ContextTool) buildChapterSelectedMemory(envelope *chapterContextEnvelope, state contextBuildState, warn func(string, error)) {
@@ -454,7 +461,7 @@ func (t *ContextTool) buildChapterSelectedMemory(envelope *chapterContextEnvelop
 
 func (t *ContextTool) buildChapterEpisodicMemory(envelope *chapterContextEnvelope, state contextBuildState, warn func(string, error)) {
 	if len(state.foreshadow) > 0 && len(state.storyThreads) == 0 {
-		envelope.Episodic["foreshadow_ledger"] = state.foreshadow
+		envelope.Episodic["foreshadow_ledger"] = foreshadowWithDormancy(state.foreshadow, state.chapter)
 	}
 
 	// 配角名册：召回最近活跃的次要角色，让 Writer 在引入旧角色时能保持口吻/定位一致
@@ -680,7 +687,7 @@ func (t *ContextTool) buildArchitectFoundation(envelope *architectContextEnvelop
 		warn("world_rules", err)
 	}
 	if foreshadow, err := t.store.World.LoadActiveForeshadow(); err == nil && len(foreshadow) > 0 {
-		envelope.Foundation["foreshadow_ledger"] = foreshadow
+		envelope.Foundation["foreshadow_ledger"] = foreshadowWithDormancy(foreshadow, t.currentChapterHint())
 	} else {
 		warn("foreshadow_ledger", err)
 	}
@@ -700,4 +707,49 @@ func (t *ContextTool) buildArchitectReferences(envelope *architectContextEnvelop
 	}
 
 	envelope.References["references"] = t.architectReferences()
+}
+
+// ── 伏笔休眠视图 ──
+
+// foreshadowWithDormancy 给每条活跃伏笔附上 chapters_since_last_touch
+// （当前章 - 最近一次 plant/advance 的章号，经 DormantSince 取值）。
+// 纯代码推导：把「哪条伏笔该推进了」从模型的脑算题变成事实字段，不新增 LLM 调用。
+func foreshadowWithDormancy(entries []domain.ForeshadowEntry, chapter int) []domain.ForeshadowStatus {
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make([]domain.ForeshadowStatus, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, domain.ForeshadowStatus{
+			ForeshadowEntry:        e,
+			ChaptersSinceLastTouch: max(chapter-e.DormantSince(), 0),
+		})
+	}
+	return out
+}
+
+// foreshadowDue 筛出休眠超过 domain.ForeshadowDueChapters 的活跃伏笔，按休眠降序
+// （最久未动的在最前）。与 diag 的 StaleForeshadow 停滞下限共用同一阈值常量。
+func foreshadowDue(entries []domain.ForeshadowEntry, chapter int) []domain.ForeshadowStatus {
+	var due []domain.ForeshadowStatus
+	for _, s := range foreshadowWithDormancy(entries, chapter) {
+		if s.ChaptersSinceLastTouch > domain.ForeshadowDueChapters {
+			due = append(due, s)
+		}
+	}
+	sort.SliceStable(due, func(i, j int) bool {
+		return due[i].ChaptersSinceLastTouch > due[j].ChaptersSinceLastTouch
+	})
+	return due
+}
+
+// currentChapterHint 返回 architect 路径（无章节参数）下"当前章"的 best-effort 基准：
+// 下一待写章号；无进度时为 1。让 architect 看到的休眠章数与 writer 路径同一基准。
+func (t *ContextTool) currentChapterHint() int {
+	if progress, err := t.store.Progress.Load(); err == nil && progress != nil {
+		if n := progress.NextChapter(); n > 0 {
+			return n
+		}
+	}
+	return 1
 }

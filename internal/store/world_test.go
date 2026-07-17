@@ -146,8 +146,14 @@ func TestForeshadow_UpdateLifecycle(t *testing.T) {
 	if all[0].Status != "advanced" {
 		t.Errorf("f1: want advanced, got %s", all[0].Status)
 	}
+	if all[0].LastTouchedAt != 3 {
+		t.Errorf("f1: advance@3 should bump LastTouchedAt to 3, got %d", all[0].LastTouchedAt)
+	}
 	if all[1].Status != "resolved" || all[1].ResolvedAt != 3 {
 		t.Errorf("f2: want resolved@3, got %s@%d", all[1].Status, all[1].ResolvedAt)
+	}
+	if all[1].LastTouchedAt != 1 {
+		t.Errorf("f2: plant@1 should set LastTouchedAt to 1, got %d", all[1].LastTouchedAt)
 	}
 
 	// LoadActive 应排除 resolved

@@ -210,6 +210,9 @@ func buildLoadingSummary(result map[string]any, chapter int) string {
 	if n := countSlice("foreshadow_ledger"); n > 0 {
 		items = append(items, fmt.Sprintf("伏笔:%d", n))
 	}
+	if n := sliceLen(result["foreshadow_due"]); n > 0 {
+		items = append(items, fmt.Sprintf("伏笔到期:%d", n))
+	}
 	if n := countSlice("relationship_state"); n > 0 {
 		items = append(items, fmt.Sprintf("关系:%d", n))
 	}
@@ -274,6 +277,8 @@ func sliceLen(v any) int {
 	case []domain.TimelineEvent:
 		return len(s)
 	case []domain.ForeshadowEntry:
+		return len(s)
+	case []domain.ForeshadowStatus:
 		return len(s)
 	case []domain.RelationshipEntry:
 		return len(s)
@@ -706,15 +711,16 @@ func (t *ContextTool) selectStoryThreads(state contextBuildState) []domain.Recal
 		}
 	}
 
-	// 2. 账龄回填：与当前章无关、但久挂未回收的伏笔（最旧优先），补足剩余名额。
+	// 2. 账龄回填：与当前章无关、但久未推进的伏笔（休眠最久优先），补足剩余名额。
 	//    补的是相关性召回天然的盲区——独自悬挂太久、却没在本章撞上关键词的那根线。
+	//    休眠期从最近一次触及（埋设/推进）起算，刚推进过的老伏笔不会误报。
 	for _, entry := range agingForeshadow(state.foreshadow, state.chapter, picked) {
 		add(domain.RecallItem{
 			Kind:    "story_thread",
 			Key:     entry.ID,
 			Chapter: entry.PlantedAt,
-			Reason:  "伏笔久挂未回收，注意适时推进或回收",
-			Summary: fmt.Sprintf("伏笔“%s”埋于第%d章，已 %d 章未回收：%s", entry.ID, entry.PlantedAt, state.chapter-entry.PlantedAt, truncateRunes(entry.Description, 30)),
+			Reason:  "伏笔久未推进，注意适时推进或回收",
+			Summary: fmt.Sprintf("伏笔“%s”埋于第%d章，已 %d 章未推进：%s", entry.ID, entry.PlantedAt, state.chapter-entry.DormantSince(), truncateRunes(entry.Description, 30)),
 		})
 		if len(items) >= maxThreads {
 			break
@@ -724,21 +730,23 @@ func (t *ContextTool) selectStoryThreads(state contextBuildState) []domain.Recal
 	return items
 }
 
-// agingForeshadow 返回账龄 ≥ foreshadowAgingChapters 的未回收伏笔，按最旧优先排序，
+// agingForeshadow 返回休眠期 ≥ foreshadowAgingChapters 的未回收伏笔，按休眠最久优先排序，
 // 跳过 picked 中已被相关性召回选中的。入参 all 已是 active（未回收）列表，故无需再过滤状态。
+// 休眠期 = chapter - DormantSince()（最近一次埋设/推进的章节），不是从埋设章起算——
+// 一条 ch50 刚推进过的 ch5 伏笔不该被标成"已 45 章未动"。
 func agingForeshadow(all []domain.ForeshadowEntry, chapter int, picked map[string]struct{}) []domain.ForeshadowEntry {
 	var aging []domain.ForeshadowEntry
 	for _, e := range all {
 		if _, ok := picked[e.ID]; ok {
 			continue
 		}
-		if e.PlantedAt <= 0 || chapter-e.PlantedAt < foreshadowAgingChapters {
+		if e.DormantSince() <= 0 || chapter-e.DormantSince() < foreshadowAgingChapters {
 			continue
 		}
 		aging = append(aging, e)
 	}
 	sort.SliceStable(aging, func(i, j int) bool {
-		return aging[i].PlantedAt < aging[j].PlantedAt
+		return aging[i].DormantSince() < aging[j].DormantSince()
 	})
 	return aging
 }
@@ -881,10 +889,10 @@ func hasMeaningfulOverlap(a, b string) bool {
 const storyThreadRecallThreshold = 6
 const storyThreadRecallMinSelected = 2
 
-// foreshadowAgingChapters：一条伏笔自埋设起超过这么多章仍未回收，视为"久挂"。
-// 这类伏笔即使与当前章关键词无关，也回填进 story_threads，避免长篇里被彻底遗忘
+// foreshadowAgingChapters：一条伏笔自最近一次触及（埋设/推进）起超过这么多章未再推进，
+// 视为"久挂"。这类伏笔即使与当前章关键词无关，也回填进 story_threads，避免长篇里被彻底遗忘
 // （相关性召回天然只看见与本章相关的线，看不见独自悬挂太久的那根）。
-// 账龄是纯代码派生的事实（当前章 - 埋设章），只陈述"已挂 N 章未回收"，不下指令。
+// 休眠期是纯代码派生的事实（当前章 - DormantSince），只陈述"已 N 章未推进"，不下指令。
 const foreshadowAgingChapters = 30
 
 func longestCommonSubstringRunes(a, b []rune) int {

@@ -581,14 +581,14 @@ func TestContextToolSelectedMemorySurfacesAgingForeshadow(t *testing.T) {
 		t.Fatalf("Unmarshal: %v", err)
 	}
 
-	// 两条久挂伏笔应被回填，且带"未回收"账龄标注。
+	// 两条久挂伏笔应被回填，且带"未推进"账龄标注。
 	if !containsRecallSummary(payload.Selected.StoryThreads, "上古封印的裂隙") {
 		t.Fatalf("expected aging foreshadow to surface despite no relevance, got %+v", payload.Selected.StoryThreads)
 	}
 	if !containsRecallSummary(payload.Selected.StoryThreads, "失落的血脉") {
 		t.Fatalf("expected second aging foreshadow to surface, got %+v", payload.Selected.StoryThreads)
 	}
-	if !containsRecallSummary(payload.Selected.StoryThreads, "未回收") {
+	if !containsRecallSummary(payload.Selected.StoryThreads, "未推进") {
 		t.Fatalf("expected aging item to carry overdue annotation, got %+v", payload.Selected.StoryThreads)
 	}
 	// 近期伏笔（账龄 <30 且不相关）不应被回填。
@@ -919,5 +919,64 @@ func TestContextToolInjectsRuleViolations(t *testing.T) {
 	_ = json.Unmarshal(raw3, &result3)
 	if _, has := result3["rule_violations"]; has {
 		t.Fatal("无违规章节不应带 rule_violations 字段")
+	}
+}
+
+// 休眠期从最近一次触及（LastTouchedAt）起算：埋得早但刚推进过的伏笔不应误报，
+// 推进过一次之后烂尾的伏笔（advanced + 旧 LastTouchedAt）必须能被账龄回填看到。
+func TestContextToolAgingForeshadowRespectsLastTouched(t *testing.T) {
+	dir := t.TempDir()
+	s := store.NewStore(dir)
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	// 当前章主题与所有伏笔都不沾边，确保相关性召回为空，只剩账龄回填生效。
+	if err := s.Outline.SaveOutline([]domain.OutlineEntry{
+		{Chapter: 50, Title: "瘟疫", CoreEvent: "林砚在城南医馆救治瘟疫病患", Scenes: []string{"熬药", "封锁街巷"}},
+	}); err != nil {
+		t.Fatalf("SaveOutline: %v", err)
+	}
+	if err := s.Progress.Init("test", 60); err != nil {
+		t.Fatalf("InitProgress: %v", err)
+	}
+	if err := s.World.SaveForeshadowLedger([]domain.ForeshadowEntry{
+		{ID: "dormant_a", Description: "古井下的铜铃", PlantedAt: 3, Status: "planted"},
+		{ID: "dormant_b", Description: "师父留下的残谱", PlantedAt: 5, Status: "advanced", LastTouchedAt: 8},
+		// 埋得早但第 47 章刚推进过：休眠期 3 章，不应被回填（旧口径会标"已 45 章未动"）
+		{ID: "fresh_advance", Description: "城墙上的爪痕", PlantedAt: 3, Status: "advanced", LastTouchedAt: 47},
+		{ID: "rumor_a", Description: "近日传闻甲", PlantedAt: 47, Status: "planted"},
+		{ID: "rumor_b", Description: "近日传闻乙", PlantedAt: 48, Status: "planted"},
+		{ID: "rumor_c", Description: "近日传闻丙", PlantedAt: 49, Status: "planted"},
+	}); err != nil {
+		t.Fatalf("SaveForeshadowLedger: %v", err)
+	}
+
+	tool := NewContextTool(s, References{}, "default")
+	args, err := json.Marshal(map[string]any{"chapter": 50})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	result, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	var payload struct {
+		Selected struct {
+			StoryThreads []domain.RecallItem `json:"story_threads"`
+		} `json:"selected_memory"`
+	}
+	if err := json.Unmarshal(result, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+
+	if !containsRecallSummary(payload.Selected.StoryThreads, "古井下的铜铃") {
+		t.Fatalf("dormant planted foreshadow should surface, got %+v", payload.Selected.StoryThreads)
+	}
+	if !containsRecallSummary(payload.Selected.StoryThreads, "师父留下的残谱") {
+		t.Fatalf("advanced-but-dormant foreshadow should surface, got %+v", payload.Selected.StoryThreads)
+	}
+	if containsRecallSummary(payload.Selected.StoryThreads, "城墙上的爪痕") {
+		t.Fatalf("recently advanced foreshadow must not be labeled dormant, got %+v", payload.Selected.StoryThreads)
 	}
 }
