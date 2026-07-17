@@ -96,7 +96,7 @@
 
 基于 premise 和 outline 生成角色档案（JSON 格式），每个角色字段类型**严格如下**，不得改写为 object：
 - `name`: string
-- `aliases`: string[]（无则省略）
+- `aliases`: string[]（无则省略；**需高区分度**——避免与普通名词撞名，如药材、颜色、器物、常见称呼，否则后文检索与一致性检查会真假难辨）
 - `role`: string
 - `description`: string（整体描述）
 - `arc`: **string**（整段角色弧线描述，不是 `{start/middle/end}` 对象；用"前期…后期…"表述）
