@@ -557,3 +557,31 @@ func (s *WorldStore) LoadContinuityIssues(chapter int) *domain.ContinuityIssues 
 	}
 	return latest
 }
+
+// LoadAllContinuityIssues 读取全部章节的最新连续性检测记录（同章 latest-wins，
+// 空结果=复测合格已清，不入选）。供 /diag 离线聚合，增量读单章用 LoadContinuityIssues。
+func (s *WorldStore) LoadAllContinuityIssues() map[int]*domain.ContinuityIssues {
+	s.io.mu.RLock()
+	defer s.io.mu.RUnlock()
+	out := map[int]*domain.ContinuityIssues{}
+	data, err := os.ReadFile(s.io.path(continuityIssuesFile))
+	if err != nil {
+		return out
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var rec ChapterContinuity
+		if json.Unmarshal([]byte(line), &rec) != nil {
+			continue
+		}
+		if rec.Issues.Empty() {
+			delete(out, rec.Chapter) // 复测合格：清除该章旧记录的影响
+			continue
+		}
+		out[rec.Chapter] = rec.Issues
+	}
+	return out
+}

@@ -445,3 +445,45 @@ func TestContinuityIssues_SaveLoadLatestWins(t *testing.T) {
 		t.Fatal("ch6 should have issues")
 	}
 }
+
+func TestLoadAllContinuityIssues_LatestWinsAndClear(t *testing.T) {
+	s := newTestStore(t)
+
+	issues := &domain.ContinuityIssues{
+		StateRegressions: []domain.StateRegression{
+			{Entity: "老周", Field: "status", Curr: "死亡", Next: "重伤痊愈", Severity: domain.SeverityError},
+		},
+	}
+	// ch5 两条记录：旧的有问题，新的清空（复测合格）→ 不入选
+	if err := s.World.SaveContinuityIssues(5, issues); err != nil {
+		t.Fatalf("Save(5): %v", err)
+	}
+	// ch7 一条有问题 → 入选
+	if err := s.World.SaveContinuityIssues(7, issues); err != nil {
+		t.Fatalf("Save(7): %v", err)
+	}
+	// ch6 仅空记录 → 不入选
+	if err := s.World.SaveContinuityIssues(6, nil); err != nil {
+		t.Fatalf("Save(6): %v", err)
+	}
+	if err := s.World.SaveContinuityIssues(5, nil); err != nil {
+		t.Fatalf("Save(5,clear): %v", err)
+	}
+
+	all := s.World.LoadAllContinuityIssues()
+	if len(all) != 1 {
+		t.Fatalf("want only ch7, got %v", keysOfMap(all))
+	}
+	got := all[7]
+	if got == nil || len(got.StateRegressions) != 1 || got.StateRegressions[0].Entity != "老周" {
+		t.Fatalf("ch7 record mismatch: %+v", got)
+	}
+}
+
+func keysOfMap(m map[int]*domain.ContinuityIssues) []int {
+	var ks []int
+	for k := range m {
+		ks = append(ks, k)
+	}
+	return ks
+}

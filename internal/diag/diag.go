@@ -11,16 +11,17 @@ import (
 // ── 诊断阈值 ─────────────────────────────────────────────
 
 const (
-	ThresholdDimScoreLow      = 70  // ChronicLowDimension: 维度均分低于此值告警
-	ThresholdContractMissRate = 0.3 // ContractMissPattern: 合同未达成率上限
-	ThresholdRewriteRate      = 0.5 // ExcessiveRewrites: 改写率上限
-	ThresholdWordShortRatio   = 0.4 // WordCountAnomaly: 字数低于均值此比例视为异常
-	ThresholdWordLongRatio    = 2.5 // WordCountAnomaly: 字数高于均值此比例视为异常
-	ThresholdHookWeakScore    = 75  // HookWeakChain: hook 低于此分视为偏弱
-	ThresholdHookWeakChain    = 3   // HookWeakChain: 连续偏弱章数阈值
-	ThresholdPayoffMissRate   = 0.4 // PayoffMissPattern: payoff 未兑现率上限
-	ThresholdCompassDrift     = 15  // CompassDrift: 指南针未更新章数上限
-	ThresholdTimelineGapRate  = 0.3 // TimelineGaps: 缺失率容忍上限
+	ThresholdDimScoreLow       = 70  // ChronicLowDimension: 维度均分低于此值告警
+	ThresholdContractMissRate  = 0.3 // ContractMissPattern: 合同未达成率上限
+	ThresholdRewriteRate       = 0.5 // ExcessiveRewrites: 改写率上限
+	ThresholdWordShortRatio    = 0.4 // WordCountAnomaly: 字数低于均值此比例视为异常
+	ThresholdWordLongRatio     = 2.5 // WordCountAnomaly: 字数高于均值此比例视为异常
+	ThresholdHookWeakScore     = 75  // HookWeakChain: hook 低于此分视为偏弱
+	ThresholdHookWeakChain     = 3   // HookWeakChain: 连续偏弱章数阈值
+	ThresholdPayoffMissRate    = 0.4 // PayoffMissPattern: payoff 未兑现率上限
+	ThresholdCompassDrift      = 15  // CompassDrift: 指南针未更新章数上限
+	ThresholdTimelineGapRate   = 0.3 // TimelineGaps: 缺失率容忍上限
+	ThresholdUnreportedChronic = 3   // ContinuityAlerts: 同一角色漏报多少章才算慢性
 )
 
 // allRules 按 flow → quality → planning → context 排列。
@@ -47,6 +48,7 @@ var allRules = []RuleFunc{
 	GhostCharacter,
 	TimelineGaps,
 	RelationshipStagnation,
+	ContinuityAlerts,
 }
 
 // Analyze 是诊断系统的唯一入口。

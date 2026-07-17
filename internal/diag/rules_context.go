@@ -2,7 +2,10 @@ package diag
 
 import (
 	"fmt"
+	"sort"
 	"strings"
+
+	"github.com/voocel/ainovel-cli/internal/domain"
 )
 
 // GhostCharacter 检测 core/important 角色长期未出现。
@@ -151,4 +154,98 @@ func RelationshipStagnation(snap *Snapshot) []Finding {
 		Evidence:   fmt.Sprintf("relationship_entries=%d, latest_update=ch%d, latest_completed=ch%d", len(snap.Relationships), latestRelCh, snap.LatestCompleted()),
 		Suggestion: "commit_chapter 的关系更新可能停止工作，或故事关系确实无变化。检查 Writer 输出的 relationships 字段。",
 	}}
+}
+
+// ContinuityAlerts 聚合 commit 落盘的连续性机械检测记录（meta/continuity_issues.jsonl）：
+// ① 已提交章节仍存在 error 级状态回退（如已死亡角色出现新状态）——硬矛盾已出厂；
+// ② 已提交章节存在 error 级关系越级跳变；
+// ③ 出场漏报跨多章反复出现——摘要/名册事实链在系统性缺角色。
+// 证据全部来自落盘记录本身；重写过且复测合格的章节记录已被 latest-wins 覆盖，不会误报。
+func ContinuityAlerts(snap *Snapshot) []Finding {
+	if snap.Progress == nil || len(snap.ContinuityIssues) == 0 {
+		return nil
+	}
+	completed := make(map[int]bool, snap.CompletedCount())
+	for _, ch := range snap.Progress.CompletedChapters {
+		completed[ch] = true
+	}
+	chapters := make([]int, 0, len(snap.ContinuityIssues))
+	for ch := range snap.ContinuityIssues {
+		chapters = append(chapters, ch)
+	}
+	sort.Ints(chapters)
+
+	var stateErrs, jumpErrs []string
+	unreportedByName := make(map[string][]int)
+	for _, ch := range chapters {
+		issues := snap.ContinuityIssues[ch]
+		if issues == nil || !completed[ch] {
+			continue
+		}
+		for _, r := range issues.StateRegressions {
+			if r.Severity == domain.SeverityError {
+				stateErrs = append(stateErrs, fmt.Sprintf("ch%d: %s %s %s→%s", ch, r.Entity, r.Field, r.Curr, r.Next))
+			}
+		}
+		for _, j := range issues.RelationshipJumps {
+			if j.Severity == domain.SeverityError {
+				jumpErrs = append(jumpErrs, fmt.Sprintf("ch%d: %s-%s %s→%s", ch, j.A, j.B, j.Prev, j.Next))
+			}
+		}
+		for _, u := range issues.UnreportedCharacters {
+			unreportedByName[u.Name] = append(unreportedByName[u.Name], ch)
+		}
+	}
+
+	var findings []Finding
+	if len(stateErrs) > 0 {
+		findings = append(findings, Finding{
+			Rule:       "ContinuityAlerts",
+			Category:   CatContext,
+			Severity:   SevCritical,
+			Confidence: ConfHigh,
+			AutoLevel:  AutoSuggest,
+			Target:     "meta/continuity_issues.jsonl",
+			Title:      fmt.Sprintf("已提交章节存在 %d 处硬性状态矛盾", len(stateErrs)),
+			Evidence:   strings.Join(stateErrs, "; "),
+			Suggestion: "已死亡/离场的角色出现新状态，属硬矛盾。在输入框提交干预指令把相关章节加入返工队列重写；若“复活”本就是剧情设定则属误报，请在 .ainovel/rules/ 用自然语言说明，后续评审会并读该偏好。",
+		})
+	}
+	if len(jumpErrs) > 0 {
+		findings = append(findings, Finding{
+			Rule:       "ContinuityAlerts",
+			Category:   CatContext,
+			Severity:   SevWarning,
+			Confidence: ConfMedium,
+			AutoLevel:  AutoNone,
+			Target:     "meta/continuity_issues.jsonl",
+			Title:      fmt.Sprintf("已提交章节存在 %d 处关系越级跳变", len(jumpErrs)),
+			Evidence:   strings.Join(jumpErrs, "; "),
+			Suggestion: "关系等级跨度过大（如仇人骤变恋人）。若中间过程被压缩，用干预指令要求补过渡章或重写相关章；词表分级误伤由 editor 核对原文裁定。",
+		})
+	}
+
+	// 出场漏报只在慢性化时报：同一角色 ≥ThresholdUnreportedChronic 章未申报。
+	// 单章偶发由 editor 当场处理，不进 diag。
+	var chronic []string
+	for name, chs := range unreportedByName {
+		if len(chs) >= ThresholdUnreportedChronic {
+			chronic = append(chronic, fmt.Sprintf("%s(%s)", name, intsToStr(chs)))
+		}
+	}
+	sort.Strings(chronic)
+	if len(chronic) > 0 {
+		findings = append(findings, Finding{
+			Rule:       "ContinuityAlerts",
+			Category:   CatContext,
+			Severity:   SevWarning,
+			Confidence: ConfMedium,
+			AutoLevel:  AutoNone,
+			Target:     "prompt.writer",
+			Title:      fmt.Sprintf("出场漏报慢性化: %d 个角色 ≥%d 章未申报", len(chronic), ThresholdUnreportedChronic),
+			Evidence:   strings.Join(chronic, "; "),
+			Suggestion: "commit_chapter 的 characters / cast_intros 填报执行不严，摘要与配角名册会持续缺这些角色（GhostCharacter 与召回随之失真）。检查 writer.md commit 参数段的执行，或用干预指令要求 editor 复核受影响章。",
+		})
+	}
+	return findings
 }

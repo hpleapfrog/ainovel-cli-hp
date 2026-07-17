@@ -28,6 +28,9 @@ type Snapshot struct {
 	Reviews       map[int]*domain.ReviewEntry
 	Plans         map[int]*domain.ChapterPlan
 	Summaries     map[int]*domain.ChapterSummary
+	// ContinuityIssues 是 meta/continuity_issues.jsonl 的按章最新记录
+	// （commit 时机械检测的状态回退/关系跳变/出场漏报；空=复测合格已清）。
+	ContinuityIssues map[int]*domain.ContinuityIssues
 
 	LoadErrors []string // 非 NotExist 的加载失败，区分"无数据"和"读取出错"
 }
@@ -74,6 +77,7 @@ func Load(s *store.Store) Snapshot {
 	check("state_changes", err)
 	snap.StyleRules, err = s.World.LoadStyleRules()
 	check("style_rules", err)
+	snap.ContinuityIssues = s.World.LoadAllContinuityIssues()
 
 	if snap.Progress != nil {
 		for _, ch := range snap.Progress.CompletedChapters {
