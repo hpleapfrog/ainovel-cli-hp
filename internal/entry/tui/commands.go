@@ -127,6 +127,7 @@ func commandRegistryInstance() commandRegistry {
 				s.addType = t
 				s.addURL = u
 				s.editing = true
+				s.escTarget = escTargetClose
 				m.setup = s
 				m.textarea.Blur()
 				return m, nil

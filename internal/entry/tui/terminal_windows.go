@@ -38,15 +38,13 @@ var altBufHandle windows.Handle
 var origStdout *os.File
 var usesFallback bool
 
-func enableVirtualTerminalProcessing() error {
-	var firstErr error
-	vtOnce.Do(func() {
-		firstErr = initWindowsConsole()
-	})
-	return firstErr
+// enableVirtualTerminalProcessing 尽力启用 VT 处理；所有失败按设计静默
+// （重定向 stdout、无 console 等场景不应阻断 TUI 启动），故无错误返回。
+func enableVirtualTerminalProcessing() {
+	vtOnce.Do(initWindowsConsole)
 }
 
-func initWindowsConsole() error {
+func initWindowsConsole() {
 	windows.SetConsoleOutputCP(65001)
 	windows.SetConsoleCP(65001)
 	forceModernConsole()
@@ -57,9 +55,11 @@ func initWindowsConsole() error {
 		// 失败时保持 bubbletea 原生 AltScreen，不误判为 legacy 渲染
 		usesFallback = createAltScreenBuffer()
 	}
-	return nil
 }
 
+// forceModernConsole 为当前用户永久启用新控制台的 VT 支持。
+// 注意：这会永久写入注册表 HKCU\Console\VirtualTerminalLevel=1，影响该用户
+// 此后所有新控制台会话（不只是本程序）。属一次性环境修复，重复运行幂等。
 func forceModernConsole() {
 	k, err := registry.OpenKey(registry.CURRENT_USER, `Console`, registry.SET_VALUE)
 	if err != nil {
@@ -74,9 +74,6 @@ func forceModernConsole() {
 
 func isLegacyConsole() bool {
 	if os.Getenv("WT_SESSION") != "" {
-		return false
-	}
-	if os.Getenv("TERM_PROGRAM") == "vscode" {
 		return false
 	}
 	if os.Getenv("ConEmuANSI") == "ON" {

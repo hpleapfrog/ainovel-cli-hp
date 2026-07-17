@@ -23,24 +23,27 @@ const (
 	setupAddStepType
 	setupAddStepKey
 	setupAddStepURL
-	setupAddStepDone
 )
 
+// escTargetClose 是 escTarget 的特殊值：addStep 流程 Esc 直接关闭设置面板。
+const escTargetClose setupFocus = -1
+
 type setupState struct {
-	focus    setupFocus
-	cursor   int
-	addStep  setupAddStep
-	addInput string
-	addName  string
-	addType  string
-	addKey   string
-	addURL   string
-	editing  bool // true=编辑已有 provider（走 UpdateProvider）；false=新增（走 AddProvider）
-	message  string
+	focus     setupFocus
+	cursor    int
+	addStep   setupAddStep
+	addInput  string
+	addName   string
+	addType   string
+	addKey    string
+	addURL    string
+	editing   bool       // true=编辑已有 provider（走 UpdateProvider）；false=新增（走 AddProvider）
+	escTarget setupFocus // addStep 流程 Esc 的落点：menu / provider 列表 / escTargetClose
+	message   string
 }
 
 func newSetupState() *setupState {
-	return &setupState{cursor: -1}
+	return &setupState{cursor: -1, escTarget: setupFocusAddProvider}
 }
 
 var setupMenuItems = []string{
@@ -96,9 +99,10 @@ func (s *setupState) handleMenuKey(msg tea.KeyMsg, m *Model) (tea.Model, tea.Cmd
 				n := "my-provider"
 				s.startAddProvider(n)
 				s.addName = n
-				return m, nil
+			} else {
+				s.startAddProvider("")
 			}
-			s.startAddProvider("")
+			s.escTarget = setupFocusMenu
 			return m, nil
 		}
 	}
@@ -117,7 +121,12 @@ func (s *setupState) startAddProvider(name string) {
 
 func (s *setupState) handleAddStepKey(msg tea.KeyMsg, m *Model) (tea.Model, tea.Cmd) {
 	if msg.Type == tea.KeyEsc {
-		s.focus = setupFocusAddProvider
+		// Esc 落点随入口走：/key 直入的直接关闭，菜单来的回菜单，列表来的回列表
+		if s.escTarget == escTargetClose {
+			m.setup = nil
+			return m, m.textarea.Focus()
+		}
+		s.focus = s.escTarget
 		s.cursor = 0
 		s.message = ""
 		return m, nil
@@ -263,6 +272,7 @@ func (s *setupState) handleProviderKey(msg tea.KeyMsg, m *Model) (tea.Model, tea
 		switch msg.Runes[0] {
 		case 'a':
 			s.startAddProvider("")
+			s.escTarget = setupFocusAddProvider
 			return m, nil
 		case 'd':
 			if !hasCursor {
@@ -297,6 +307,7 @@ func (s *setupState) handleProviderKey(msg tea.KeyMsg, m *Model) (tea.Model, tea
 			s.addStep = setupAddStepName
 			s.addInput = name
 			s.editing = true
+			s.escTarget = setupFocusAddProvider
 			s.focus = setupFocusAddStep
 			return m, nil
 		case 'k':
@@ -315,6 +326,7 @@ func (s *setupState) handleProviderKey(msg tea.KeyMsg, m *Model) (tea.Model, tea
 			s.addInput = ""
 			s.addKey = ""
 			s.editing = true
+			s.escTarget = setupFocusAddProvider
 			s.focus = setupFocusAddStep
 			return m, nil
 		case 'u':
@@ -333,6 +345,7 @@ func (s *setupState) handleProviderKey(msg tea.KeyMsg, m *Model) (tea.Model, tea
 			s.addInput = ""
 			s.addURL = ""
 			s.editing = true
+			s.escTarget = setupFocusAddProvider
 			s.focus = setupFocusAddStep
 			return m, nil
 		}
@@ -462,11 +475,11 @@ func renderProviderListModal(w int, state *setupState, rt modelRuntime) string {
 }
 
 func renderAddStepModal(w int, state *setupState) string {
+	// 标题只看模式标志：编辑（e/k/u//key 进入）显示名称，新增统一"添加"——
+	// 不再用输入值猜（无 provider 时 my-provider 预填曾被误标为"编辑"）
 	action := "添加"
-	if state.addStep != setupAddStepName || state.addInput == "" || state.addInput == state.addName {
-		if state.addName != "" {
-			action = "编辑 " + state.addName
-		}
+	if state.editing && state.addName != "" {
+		action = "编辑 " + state.addName
 	}
 	title := lipgloss.NewStyle().Foreground(colorAccent).Bold(true).Render(" " + action + " Provider ")
 

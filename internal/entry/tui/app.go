@@ -16,10 +16,8 @@ import (
 func Run(cfg bootstrap.Config, bundle assets.Bundle, version string) error {
 	// Windows cmd.exe / PowerShell（非 Windows Terminal）默认不启用 VT 处理，
 	// 导致 ANSI 转义序列被当普通文本输出，画面叠加/撕裂。必须在创建
-	// bubbletea 程序前启用。
-	if err := enableVirtualTerminalProcessing(); err != nil {
-		return err
-	}
+	// bubbletea 程序前启用（内部失败按设计静默，不阻断启动）。
+	enableVirtualTerminalProcessing()
 	defer restoreMainScreen()
 
 	rt, err := host.New(cfg, bundle)

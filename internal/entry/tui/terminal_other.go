@@ -4,9 +4,7 @@ package tui
 
 // enableVirtualTerminalProcessing 在非 Windows 平台上是空操作。
 // Unix/Linux/macOS 终端默认支持 VT 转义序列。
-func enableVirtualTerminalProcessing() error {
-	return nil
-}
+func enableVirtualTerminalProcessing() {}
 
 // restoreMainScreen 在非 Windows 平台上是空操作。
 func restoreMainScreen() {}
