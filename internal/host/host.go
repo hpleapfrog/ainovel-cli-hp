@@ -1200,6 +1200,9 @@ func (h *Host) AddProviderModel(provider, model string) error {
 func (h *Host) RemoveProviderModel(provider, model string) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if owners := h.cfg.ModelUsedBy(provider, model); len(owners) > 0 {
+		return fmt.Errorf("模型 %q 正被 %s 使用，请先切换这些引用后再删除", model, strings.Join(owners, " / "))
+	}
 	h.cfg.RemoveProviderModel(provider, model)
 	path := bootstrap.DefaultConfigPath()
 	if path == "" {
@@ -1212,6 +1215,25 @@ func (h *Host) RemoveProviderModel(provider, model string) error {
 		Time:     time.Now(),
 		Category: "SYSTEM",
 		Summary:  fmt.Sprintf("已移除模型：%s/%s", provider, model),
+		Level:    "info",
+	})
+	return nil
+}
+
+// RenameProviderModel 重命名 provider 下的模型并同步所有引用点（default/角色/fallback），落盘配置。
+func (h *Host) RenameProviderModel(provider, oldName, newName string) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if err := h.cfg.RenameProviderModel(provider, oldName, newName); err != nil {
+		return err
+	}
+	if err := h.saveConfigLocked(); err != nil {
+		return err
+	}
+	h.emitEvent(Event{
+		Time:     time.Now(),
+		Category: "SYSTEM",
+		Summary:  fmt.Sprintf("已重命名模型：%s/%s → %s", provider, oldName, newName),
 		Level:    "info",
 	})
 	return nil
@@ -1245,9 +1267,14 @@ func (h *Host) AddProvider(name, apiType, apiKey, baseURL string) error {
 func (h *Host) RemoveProvider(name string) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	for _, rc := range h.cfg.Roles {
+	for roleName, rc := range h.cfg.Roles {
 		if rc.Provider == name {
-			return fmt.Errorf("角色 %s 正在使用 provider %q，请先切换该角色的 provider 后再删除", rc.Provider, name)
+			return fmt.Errorf("角色 %s 正在使用 provider %q，请先切换该角色的 provider 后再删除", roleName, name)
+		}
+		for _, fb := range rc.Fallbacks {
+			if fb.Provider == name {
+				return fmt.Errorf("角色 %s 的 fallback 正在使用 provider %q，请先调整该角色的 fallback 后再删除", roleName, name)
+			}
 		}
 	}
 	if err := h.cfg.RemoveProvider(name); err != nil {

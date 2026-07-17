@@ -114,13 +114,13 @@ type UISnapshot struct {
 	CompassScale     string
 
 	// 详情
-	LastCommitSummary  string
-	LastReviewSummary  string
-	LastCheckpointName string
-	RecentSummaries    []string
-	WorldRuleCount     int      // 世界观规则总数
-	WorldRuleCategories []string // 世界观规则分类摘要
-	ActiveForeshadowCount int   // 活跃伏笔数
+	LastCommitSummary     string
+	LastReviewSummary     string
+	LastCheckpointName    string
+	RecentSummaries       []string
+	WorldRuleCount        int      // 世界观规则总数
+	WorldRuleCategories   []string // 世界观规则分类摘要
+	ActiveForeshadowCount int      // 活跃伏笔数
 }
 
 // OutlineSnapshot 是大纲条目的展示摘要。

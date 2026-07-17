@@ -462,7 +462,10 @@ func (c *Config) AddProviderModel(provider, model string) error {
 	if c.Providers == nil {
 		c.Providers = make(map[string]ProviderConfig)
 	}
-	pc := c.Providers[provider]
+	pc, ok := c.Providers[provider]
+	if !ok {
+		return fmt.Errorf("provider %q not found: %w", provider, errs.ErrConfig)
+	}
 	for _, existing := range pc.Models {
 		if strings.EqualFold(existing, model) {
 			return nil
@@ -479,7 +482,9 @@ func (c *Config) RemoveProviderModel(provider, model string) {
 	if !ok {
 		return
 	}
-	filtered := pc.Models[:0]
+	// 新分配底层数组做过滤：[:0] 复用原数组会就地改写共享切片，
+	// 其他持有方（面板快照等）会看到被污染的旧列表。
+	filtered := make([]string, 0, len(pc.Models))
 	for _, existing := range pc.Models {
 		if !strings.EqualFold(existing, model) {
 			filtered = append(filtered, existing)
@@ -584,6 +589,92 @@ func (c Config) validateProviderAPI(owner, providerName string, pc ProviderConfi
 	}
 	if strings.ToLower(strings.TrimSpace(providerType)) != "openai" {
 		return fmt.Errorf("%s provider %q api 仅支持 OpenAI 协议 provider: %w", owner, providerName, errs.ErrConfig)
+	}
+	return nil
+}
+
+// ModelUsedBy 返回引用指定 provider/model 的所有方（default / 角色 / 角色 fallback），
+// 供删除或重命名模型前做占用检查——只删 Providers[].Models 会让引用方悬空，
+// 且 CandidateModels 会从引用把它"复活"。
+func (c Config) ModelUsedBy(provider, model string) []string {
+	var owners []string
+	if c.Provider == provider && c.ModelName == model {
+		owners = append(owners, "default")
+	}
+	for _, role := range []string{"architect", "writer", "editor"} {
+		rc, ok := c.Roles[role]
+		if !ok {
+			continue
+		}
+		if rc.Provider == provider && rc.Model == model {
+			owners = append(owners, role)
+		}
+		for _, fb := range rc.Fallbacks {
+			if fb.Provider == provider && fb.Model == model {
+				owners = append(owners, role+"(fallback)")
+			}
+		}
+	}
+	return owners
+}
+
+// RenameProviderModel 重命名 provider 下的一个模型：Models 列表替换 + 所有引用点
+// （default / 角色 / 角色 fallback）同步改写，全部成功后由调用方落盘。
+// 不同步引用点会让旧名被 CandidateModels 复活、新名与角色脱钩。
+func (c *Config) RenameProviderModel(provider, oldName, newName string) error {
+	oldName = strings.TrimSpace(oldName)
+	newName = strings.TrimSpace(newName)
+	if provider == "" || oldName == "" || newName == "" {
+		return fmt.Errorf("provider, old and new model name are required: %w", errs.ErrConfig)
+	}
+	pc, ok := c.Providers[provider]
+	if !ok {
+		return fmt.Errorf("provider %q not found: %w", provider, errs.ErrConfig)
+	}
+	if oldName == newName {
+		return nil
+	}
+	// 新名与既有模型冲突（大小写不敏感）时不允许；检查在替换前做——
+	// 换后列表里新名条目就是改名本体，会误判冲突
+	for _, m := range pc.Models {
+		if strings.EqualFold(m, newName) && !strings.EqualFold(m, oldName) {
+			return fmt.Errorf("model %q already exists in provider %q: %w", newName, provider, errs.ErrConfig)
+		}
+	}
+	found := false
+	models := make([]string, 0, len(pc.Models))
+	for _, m := range pc.Models {
+		if strings.EqualFold(m, oldName) {
+			models = append(models, newName)
+			found = true
+		} else {
+			models = append(models, m)
+		}
+	}
+	if !found {
+		return fmt.Errorf("model %q not found in provider %q: %w", oldName, provider, errs.ErrConfig)
+	}
+	pc.Models = models
+	c.Providers[provider] = pc
+
+	if c.Provider == provider && c.ModelName == oldName {
+		c.ModelName = newName
+	}
+	for role, rc := range c.Roles {
+		changed := false
+		if rc.Provider == provider && rc.Model == oldName {
+			rc.Model = newName
+			changed = true
+		}
+		for i, fb := range rc.Fallbacks {
+			if fb.Provider == provider && fb.Model == oldName {
+				rc.Fallbacks[i].Model = newName
+				changed = true
+			}
+		}
+		if changed {
+			c.Roles[role] = rc
+		}
 	}
 	return nil
 }
