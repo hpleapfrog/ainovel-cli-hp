@@ -209,19 +209,40 @@ func detectUnreportedCharacters(content string, reported []string, chars []domai
 		canonical string
 		names     []string
 	}
+	// 按正式名去重并合并别名集：characters.json 与名册可能出现同名条目
+	// （角色由配角升级为档案角色的过渡期），合并避免重复报两条。
+	seen := make(map[string]int)
 	var knowns []known
+	add := func(canonical string, aliases []string) {
+		if canonical == "" {
+			return
+		}
+		if i, ok := seen[canonical]; ok {
+			knowns[i].names = append(knowns[i].names, aliases...)
+			return
+		}
+		seen[canonical] = len(knowns)
+		knowns = append(knowns, known{canonical, append([]string{canonical}, aliases...)})
+	}
 	for _, c := range chars {
-		names := append([]string{c.Name}, c.Aliases...)
-		knowns = append(knowns, known{c.Name, names})
+		add(c.Name, c.Aliases)
 	}
 	for _, e := range cast {
-		names := append([]string{e.Name}, e.Aliases...)
-		knowns = append(knowns, known{e.Name, names})
+		add(e.Name, e.Aliases)
 	}
 
 	var out []domain.UnreportedCharacter
 	for _, k := range knowns {
-		if k.canonical == "" || reportedSet[k.canonical] {
+		// 申报单里填正式名或任一所知别名都算已申报——writer 偶尔用别名填报，
+		// 只认正式名会把"已申报"误判成漏报。
+		reportedIt := false
+		for _, n := range k.names {
+			if reportedSet[n] {
+				reportedIt = true
+				break
+			}
+		}
+		if reportedIt {
 			continue
 		}
 		mentions := 0

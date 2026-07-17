@@ -199,6 +199,12 @@ func (t *CommitChapterTool) Execute(_ context.Context, args json.RawMessage) (js
 		return nil, fmt.Errorf("save summary: %w: %w", errs.ErrStoreWrite, err)
 	}
 
+	// 一致性检测的历史基线必须在本章增量落账之前读取——
+	// 增量先入台账再加载，检测器会把"本章自己"当历史：回退/跳变永不触发，
+	// 合法死亡反被误报为复活（检测器单测喂的是不含 incoming 的历史，所以一直全绿）。
+	priorStateChanges, _ := t.store.World.LoadStateChanges()
+	priorRelations, _ := t.store.World.LoadRelationships()
+
 	// 4. 更新状态增量
 	if len(a.TimelineEvents) > 0 {
 		for i := range a.TimelineEvents {
@@ -235,11 +241,11 @@ func (t *CommitChapterTool) Execute(_ context.Context, args json.RawMessage) (js
 	var continuityIssues *domain.ContinuityIssues
 	{
 		issues := &domain.ContinuityIssues{}
-		if allChanges, _ := t.store.World.LoadStateChanges(); len(allChanges) > 0 {
-			issues.StateRegressions = detectStateRegression(allChanges, a.StateChanges)
+		if len(priorStateChanges) > 0 {
+			issues.StateRegressions = detectStateRegression(priorStateChanges, a.StateChanges)
 		}
-		if allRelations, _ := t.store.World.LoadRelationships(); len(allRelations) > 0 {
-			issues.RelationshipJumps = detectRelationshipJump(allRelations, a.RelationshipChanges)
+		if len(priorRelations) > 0 {
+			issues.RelationshipJumps = detectRelationshipJump(priorRelations, a.RelationshipChanges)
 		}
 		chars, _ := t.store.Characters.Load()
 		cast, _ := t.store.Cast.Load()
