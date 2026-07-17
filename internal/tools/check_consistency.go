@@ -66,7 +66,8 @@ func (t *CheckConsistencyTool) Execute(_ context.Context, args json.RawMessage) 
 		result["world_rules"] = rules
 	}
 	if foreshadow, _ := t.store.World.LoadActiveForeshadow(); len(foreshadow) > 0 {
-		result["foreshadow_ledger"] = foreshadow
+		// 与 novel_context 同一视图：每条带 chapters_since_last_touch 派生字段
+		result["foreshadow_ledger"] = foreshadowWithDormancy(foreshadow, a.Chapter)
 	}
 	if relationships, _ := t.store.World.LoadRelationships(); len(relationships) > 0 {
 		result["relationships"] = relationships
