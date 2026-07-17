@@ -1180,12 +1180,8 @@ func (h *Host) AddProviderModel(provider, model string) error {
 	if err := h.cfg.AddProviderModel(provider, model); err != nil {
 		return err
 	}
-	path := bootstrap.DefaultConfigPath()
-	if path == "" {
-		return nil
-	}
-	if err := bootstrap.SaveConfig(path, h.cfg); err != nil {
-		return fmt.Errorf("保存配置失败: %w", err)
+	if err := h.saveConfigLocked(); err != nil {
+		return err
 	}
 	h.emitEvent(Event{
 		Time:     time.Now(),
@@ -1204,12 +1200,8 @@ func (h *Host) RemoveProviderModel(provider, model string) error {
 		return fmt.Errorf("模型 %q 正被 %s 使用，请先切换这些引用后再删除", model, strings.Join(owners, " / "))
 	}
 	h.cfg.RemoveProviderModel(provider, model)
-	path := bootstrap.DefaultConfigPath()
-	if path == "" {
-		return nil
-	}
-	if err := bootstrap.SaveConfig(path, h.cfg); err != nil {
-		return fmt.Errorf("保存配置失败: %w", err)
+	if err := h.saveConfigLocked(); err != nil {
+		return err
 	}
 	h.emitEvent(Event{
 		Time:     time.Now(),
@@ -1340,6 +1332,18 @@ func (h *Host) saveConfigLocked() error {
 	}
 	if err := bootstrap.SaveConfig(path, h.cfg); err != nil {
 		return fmt.Errorf("保存配置失败: %w", err)
+	}
+	// 写回永远落全局（LoadConfig 的最低层）。项目级文件存在时其同名字段
+	// 覆盖全局——修改可能不生效；提示用户去哪查（写回分层语义待专项，见记录）。
+	if proj := bootstrap.DefaultProjectConfigPath(); proj != "" {
+		if _, err := os.Stat(proj); err == nil {
+			h.emitEvent(Event{
+				Time:     time.Now(),
+				Category: "SYSTEM",
+				Summary:  "已写入全局配置；检测到项目级配置 ./.ainovel/config.json，其同名字段优先生效，若修改未生效请检查该文件",
+				Level:    "info",
+			})
+		}
 	}
 	return nil
 }

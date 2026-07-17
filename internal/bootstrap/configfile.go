@@ -50,6 +50,12 @@ func projectConfigPath() string {
 	return filepath.Join(configDirName, "config.json")
 }
 
+// DefaultProjectConfigPath 暴露项目级配置路径（相对 cwd），供写回路径检测
+// "项目级文件是否存在"——LoadConfig 中其同名字段优先于全局。
+func DefaultProjectConfigPath() string {
+	return projectConfigPath()
+}
+
 // LoadConfig 按优先级加载并合并配置：
 //  1. ~/.ainovel/config.json（全局）
 //  2. ./.ainovel/config.json（项目级覆盖）
