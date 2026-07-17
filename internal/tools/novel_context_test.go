@@ -980,3 +980,157 @@ func TestContextToolAgingForeshadowRespectsLastTouched(t *testing.T) {
 		t.Fatalf("recently advanced foreshadow must not be labeled dormant, got %+v", payload.Selected.StoryThreads)
 	}
 }
+
+// continuity_card 的绝对时间锚点：窗口外的"腊月初七"类锚点应被跨窗口召回，
+// 相对时间词（三日后/翌日）不进锚点列表。
+func TestContextToolContinuityCardAbsoluteAnchors(t *testing.T) {
+	dir := t.TempDir()
+	s := store.NewStore(dir)
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	progress := &domain.Progress{TotalChapters: 60}
+	for ch := 1; ch <= 39; ch++ {
+		progress.CompletedChapters = append(progress.CompletedChapters, ch)
+	}
+	if err := s.Progress.Save(progress); err != nil {
+		t.Fatalf("Save progress: %v", err)
+	}
+	if err := s.World.AppendTimelineEvents([]domain.TimelineEvent{
+		{Chapter: 2, Time: "腊月初七", Event: "雪夜查封赌坊"},
+		{Chapter: 20, Time: "三年后", Event: "主角出关"},
+		{Chapter: 37, Time: "翌日清晨", Event: "赶路"},
+		{Chapter: 38, Time: "三日后", Event: "抵达县城"},
+		{Chapter: 39, Time: "当夜", Event: "客栈落脚"},
+	}); err != nil {
+		t.Fatalf("AppendTimelineEvents: %v", err)
+	}
+
+	tool := NewContextTool(s, References{}, "default")
+	args, err := json.Marshal(map[string]any{"chapter": 40})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	result, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	var payload struct {
+		Working map[string]json.RawMessage `json:"working_memory"`
+	}
+	if err := json.Unmarshal(result, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	cardRaw, ok := payload.Working["continuity_card"]
+	if !ok {
+		t.Fatalf("expected working_memory.continuity_card, got keys %v", keysOf(payload.Working))
+	}
+	var card string
+	if err := json.Unmarshal(cardRaw, &card); err != nil {
+		t.Fatalf("Unmarshal card: %v", err)
+	}
+
+	if !strings.Contains(card, "绝对时间锚点") {
+		t.Fatalf("expected absolute time anchors section, got:\n%s", card)
+	}
+	if !strings.Contains(card, "腊月初七") || !strings.Contains(card, "三年后") {
+		t.Fatalf("expected out-of-window absolute anchors to be recalled, got:\n%s", card)
+	}
+	if strings.Index(card, "腊月初七") > strings.Index(card, "三年后") {
+		t.Fatalf("anchors should be chronological, got:\n%s", card)
+	}
+	if !strings.Contains(card, "上一章时间：当夜") {
+		t.Fatalf("recent-window last event anchor should stay, got:\n%s", card)
+	}
+	if strings.Contains(card, "三日后：") {
+		t.Fatalf("relative time expressions must not become anchors, got:\n%s", card)
+	}
+}
+
+// 伏笔到期清单注入：working_memory.foreshadow_due 按休眠降序、只含超阈值条目；
+// episodic_memory.foreshadow_ledger 每条都带 chapters_since_last_touch 派生字段。
+func TestContextToolInjectsForeshadowDue(t *testing.T) {
+	dir := t.TempDir()
+	s := store.NewStore(dir)
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := s.Outline.SaveOutline([]domain.OutlineEntry{
+		{Chapter: 20, Title: "夜巡", CoreEvent: "林砚夜巡城北"},
+	}); err != nil {
+		t.Fatalf("SaveOutline: %v", err)
+	}
+	if err := s.Progress.Init("test", 60); err != nil {
+		t.Fatalf("InitProgress: %v", err)
+	}
+	// 3 条活跃伏笔（< 召回阈值，story_threads 不触发，台账走全量注入）
+	if err := s.World.SaveForeshadowLedger([]domain.ForeshadowEntry{
+		{ID: "old_debt", Description: "城南旧债", PlantedAt: 2, Status: "planted"},
+		{ID: "mid_clue", Description: "铜牌线索", PlantedAt: 6, Status: "advanced", LastTouchedAt: 9},
+		{ID: "fresh_rumor", Description: "近日传闻", PlantedAt: 19, Status: "planted"},
+	}); err != nil {
+		t.Fatalf("SaveForeshadowLedger: %v", err)
+	}
+
+	tool := NewContextTool(s, References{}, "default")
+	args, err := json.Marshal(map[string]any{"chapter": 20})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	result, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	var payload struct {
+		Working  map[string]json.RawMessage `json:"working_memory"`
+		Episodic map[string]json.RawMessage `json:"episodic_memory"`
+		Summary  string                     `json:"_loading_summary"`
+	}
+	if err := json.Unmarshal(result, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+
+	// foreshadow_due：两条到期，最久未动在前
+	dueRaw, ok := payload.Working["foreshadow_due"]
+	if !ok {
+		t.Fatalf("expected working_memory.foreshadow_due, got keys %v", keysOf(payload.Working))
+	}
+	var due []domain.ForeshadowStatus
+	if err := json.Unmarshal(dueRaw, &due); err != nil {
+		t.Fatalf("Unmarshal due: %v", err)
+	}
+	if len(due) != 2 {
+		t.Fatalf("want 2 due, got %+v", due)
+	}
+	if due[0].ID != "old_debt" || due[0].ChaptersSinceLastTouch != 18 {
+		t.Errorf("first: want old_debt(18), got %+v", due[0])
+	}
+	if due[1].ID != "mid_clue" || due[1].ChaptersSinceLastTouch != 11 {
+		t.Errorf("second: want mid_clue(11), got %+v", due[1])
+	}
+
+	// 台账每条带派生字段
+	ledgerRaw, ok := payload.Episodic["foreshadow_ledger"]
+	if !ok {
+		t.Fatalf("expected episodic_memory.foreshadow_ledger, got keys %v", keysOf(payload.Episodic))
+	}
+	var ledger []domain.ForeshadowStatus
+	if err := json.Unmarshal(ledgerRaw, &ledger); err != nil {
+		t.Fatalf("Unmarshal ledger: %v", err)
+	}
+	if len(ledger) != 3 {
+		t.Fatalf("want 3 ledger entries, got %+v", ledger)
+	}
+	wantDormancy := map[string]int{"old_debt": 18, "mid_clue": 11, "fresh_rumor": 1}
+	for _, e := range ledger {
+		if want, ok := wantDormancy[e.ID]; !ok || e.ChaptersSinceLastTouch != want {
+			t.Errorf("%s: want dormancy %d, got %d", e.ID, want, e.ChaptersSinceLastTouch)
+		}
+	}
+
+	if !strings.Contains(payload.Summary, "伏笔到期:2") {
+		t.Fatalf("loading summary should report due count, got %q", payload.Summary)
+	}
+}

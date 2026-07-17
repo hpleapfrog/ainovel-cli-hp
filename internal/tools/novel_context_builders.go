@@ -753,11 +753,23 @@ func (t *ContextTool) buildContinuityCard(envelope *chapterContextEnvelope, stat
 	}
 
 	// 3. 时间线锚点
+	var lastTime, lastEvent string
+	lastCh := -1
 	if timeline, err := t.store.World.LoadRecentTimeline(state.chapter, state.profile.TimelineWindow); err == nil && len(timeline) > 0 {
 		last := timeline[len(timeline)-1]
+		lastTime, lastEvent, lastCh = last.Time, last.Event, last.Chapter
 		card = append(card, "## 时间锚点")
-		card = append(card, fmt.Sprintf("- 上一章时间：%s", last.Time))
-		card = append(card, fmt.Sprintf("- 上一章事件：%s", last.Event))
+		card = append(card, fmt.Sprintf("- 上一章时间：%s", lastTime))
+		card = append(card, fmt.Sprintf("- 上一章事件：%s", lastEvent))
+		card = append(card, "")
+	}
+
+	// 3b. 跨窗口绝对时间锚点：TimelineWindow 随全书规模收缩（长篇仅 5 章），
+	// "腊月初七"这类锚点滚出窗口后彻底不可见，跨章时间推算失去参照。
+	// 从全量时间线捞最近几条含绝对时间词的事件补上（代码派生，不评判）。
+	if anchors := t.absoluteTimeAnchors(state.chapter, 3, lastCh, lastTime); len(anchors) > 0 {
+		card = append(card, "## 绝对时间锚点（跨窗口召回）")
+		card = append(card, anchors...)
 		card = append(card, "")
 	}
 
@@ -778,6 +790,43 @@ func (t *ContextTool) buildContinuityCard(envelope *chapterContextEnvelope, stat
 		card = append([]string{"本章写作前，以下事实已在之前章节中建立，写本章时**不得矛盾**："}, card...)
 		envelope.Working["continuity_card"] = strings.Join(card, "\n")
 	}
+}
+
+// absoluteTimeMarkers 粗略识别"腊月初七/试炼第二年/冬至"这类可定位的时间表述。
+// 只匹配 Time 字段（很短），不匹配事件正文；"年/月"会捎上"三年后"这类时间跳跃点——
+// 知道何时发生过跳跃正是防时间漂移需要的锚点。
+var absoluteTimeMarkers = []string{"年", "月", "初", "腊", "节", "生辰", "春", "夏", "秋", "冬", "正旦"}
+
+// absoluteTimeAnchors 从全量时间线取最近 limit 条含绝对时间词的事件（不含本章及之后），
+// 按时间正序返回。skipCh/skipTime 用于剔除"上一章锚点"已展示过的同一条，避免重复。
+func (t *ContextTool) absoluteTimeAnchors(chapter, limit, skipCh int, skipTime string) []string {
+	all, err := t.store.World.LoadTimeline()
+	if err != nil || len(all) == 0 {
+		return nil
+	}
+	var out []string
+	for i := len(all) - 1; i >= 0 && len(out) < limit; i-- {
+		e := all[i]
+		if e.Chapter >= chapter {
+			continue
+		}
+		if e.Chapter == skipCh && e.Time == skipTime {
+			continue
+		}
+		matched := false
+		for _, m := range absoluteTimeMarkers {
+			if strings.Contains(e.Time, m) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			continue
+		}
+		out = append(out, fmt.Sprintf("- 第%d章 %s：%s", e.Chapter, e.Time, e.Event))
+	}
+	slices.Reverse(out)
+	return out
 }
 
 type charState struct {
