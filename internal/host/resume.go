@@ -49,6 +49,13 @@ func describeResume(store *storepkg.Store, progress *domain.Progress) string {
 		if label := describeArcEndLabel(store, progress); label != "" {
 			return label
 		}
+		// 逐章验收政策下正向新章无许可即被闸门拦下：label 与恢复后的真实去向
+		// 对齐，不报"从第 N 章继续"（那是一秒后将被闸门驳回的措辞）。
+		if meta, _ := store.RunMeta.Load(); meta != nil && meta.AdvanceMode == domain.ChapterAdvanceReview {
+			if next := progress.NextChapter(); meta.AdvancePermitChapter != next {
+				return fmt.Sprintf("恢复：逐章验收等待放行第 %d 章（/next）", next)
+			}
+		}
 		return fmt.Sprintf("恢复：从第 %d 章继续", progress.NextChapter())
 	}
 	return "恢复"
