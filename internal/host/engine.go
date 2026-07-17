@@ -188,6 +188,9 @@ func (e *engine) run(ctx context.Context) {
 		if replaced := e.precheck(inst); replaced != nil {
 			inst = replaced
 		}
+		if inst != nil && inst.Agent == "" {
+			return
+		}
 		allowed, gateErr := e.gate.Allow(inst)
 		if gateErr != nil {
 			e.pauseWithNotify(notify.KindAdvanceGate, "章节推进控制错误，已暂停: "+gateErr.Error())
@@ -312,7 +315,7 @@ func (e *engine) precheck(inst *flow.Instruction) *flow.Instruction {
 	if progress != nil && progress.Phase == domain.PhaseComplete {
 		// 完本期唯一合法出路是 reopen(干预动作),任何派发直接丢弃。
 		slog.Warn("完本期派发被丢弃", "module", "engine", "agent", inst.Agent)
-		return &flow.Instruction{} // 置空:下轮 Route 归 nil 自然停机
+		return &flow.Instruction{} // Agent="" 的零值指令：由 run() 在 precheck 后判空自然返回，不再经 runWorker
 	}
 	if inst.Agent == "writer" {
 		if ch := writerTargetChapter(e.store); ch > 0 {

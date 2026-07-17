@@ -17,6 +17,12 @@ type modelRuntime interface {
 	CurrentThinking(role string) string
 	SwitchModel(role, provider, model string) error
 	SetRoleThinking(role, level string) error
+	AddProviderModel(provider, model string) error
+	RemoveProviderModel(provider, model string) error
+	AddProvider(name, apiType, apiKey, baseURL string) error
+	RemoveProvider(name string) error
+	UpdateProvider(name, apiType, apiKey, baseURL string) error
+	GetProviderConfig(name string) (apiType, apiKey, baseURL string, ok bool)
 }
 
 type modelSwitchFocus int
@@ -94,7 +100,39 @@ type modelSwitchState struct {
 	models      []string
 	thinking    []thinkingOption
 	message     string
+	adding      bool
+	addInput    string
+	editing     bool
+	editingOld  string
+
+	provAct   providerAction
+	provName  string
+	provInput string
+	provStep  providerInputStep
+	provType  string
+	provKey   string
+	provURL   string
 }
+
+type providerAction int
+
+const (
+	provActionNone providerAction = iota
+	provActionAdd
+	provActionEdit
+)
+
+type providerInputStep int
+
+const (
+	provStepName providerInputStep = iota
+	provStepType
+	provStepAPIKey
+	provStepBaseURL
+	provStepDone
+)
+
+var providerTypeOptions = []string{"", "openai", "anthropic", "gemini"}
 
 func newModelSwitchState(rt modelRuntime, roleHint string) *modelSwitchState {
 	state := &modelSwitchState{
@@ -259,6 +297,18 @@ func (m Model) handleModelSwitchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	state := m.modelSwitch
 
+	if state.provAct != provActionNone {
+		return m.handleProviderInputKey(msg)
+	}
+
+	if state.editing {
+		return m.handleModelEditInput(msg)
+	}
+
+	if state.adding {
+		return m.handleModelAddInput(msg)
+	}
+
 	switch msg.Type {
 	case tea.KeyEsc:
 		m.modelSwitch = nil
@@ -282,9 +332,387 @@ func (m Model) handleModelSwitchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.modelSwitch = nil
 		return m, tea.Batch(m.textarea.Focus(), fetchSnapshot(m.runtime))
+	case tea.KeyRunes:
+		return m.handleModelSwitchRune(msg)
 	default:
 		return m, nil
 	}
+}
+
+func (m Model) handleModelEditInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	state := m.modelSwitch
+	switch msg.Type {
+	case tea.KeyEnter:
+		newName := strings.TrimSpace(state.addInput)
+		if newName == "" {
+			state.message = "模型名不能为空"
+			return m, nil
+		}
+		if newName == state.editingOld {
+			state.editing = false
+			state.addInput = ""
+			state.message = ""
+			return m, nil
+		}
+		m.runtime.RemoveProviderModel(state.provider(), state.editingOld)
+		if err := m.runtime.AddProviderModel(state.provider(), newName); err != nil {
+			m.runtime.AddProviderModel(state.provider(), state.editingOld)
+			state.message = err.Error()
+			return m, nil
+		}
+		state.editing = false
+		state.addInput = ""
+		state.syncModels(m.runtime, newName)
+		state.message = ""
+		return m, nil
+	case tea.KeyEsc:
+		state.editing = false
+		state.addInput = ""
+		state.message = ""
+		return m, nil
+	case tea.KeyBackspace:
+		if len(state.addInput) > 0 {
+			r := []rune(state.addInput)
+			state.addInput = string(r[:len(r)-1])
+		}
+		return m, nil
+	case tea.KeyRunes:
+		state.addInput += string(msg.Runes)
+		return m, nil
+	}
+	return m, nil
+}
+
+func (m Model) handleModelAddInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	state := m.modelSwitch
+	switch msg.Type {
+	case tea.KeyEnter:
+		modelName := strings.TrimSpace(state.addInput)
+		if modelName == "" {
+			state.message = "模型名不能为空"
+			return m, nil
+		}
+		if err := m.runtime.AddProviderModel(state.provider(), modelName); err != nil {
+			state.message = err.Error()
+			return m, nil
+		}
+		state.adding = false
+		state.addInput = ""
+		state.syncModels(m.runtime, modelName)
+		state.message = ""
+		return m, nil
+	case tea.KeyEsc:
+		state.adding = false
+		state.addInput = ""
+		state.message = ""
+		return m, nil
+	case tea.KeyBackspace:
+		if len(state.addInput) > 0 {
+			r := []rune(state.addInput)
+			state.addInput = string(r[:len(r)-1])
+		}
+		return m, nil
+	case tea.KeyRunes:
+		state.addInput += string(msg.Runes)
+		return m, nil
+	default:
+		return m, nil
+	}
+}
+
+func (m Model) handleModelSwitchRune(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	state := m.modelSwitch
+	r := msg.Runes[0]
+	if state.focus == modelFocusProvider {
+		switch r {
+		case 'a':
+			state.provAct = provActionAdd
+			state.provStep = provStepName
+			state.provInput = ""
+			state.provType = ""
+			state.provKey = ""
+			state.provURL = ""
+			state.provName = ""
+			state.message = ""
+			return m, nil
+		case 'd':
+			name := state.provider()
+			if name == "" {
+				state.message = "没有可删除的 Provider"
+				return m, nil
+			}
+			if err := m.runtime.RemoveProvider(name); err != nil {
+				state.message = err.Error()
+				return m, nil
+			}
+			state.providers = m.runtime.ConfiguredProviders()
+			if state.providerIdx >= len(state.providers) {
+				state.providerIdx = len(state.providers) - 1
+			}
+			if state.providerIdx < 0 {
+				state.providerIdx = 0
+			}
+			state.syncModels(m.runtime, "")
+			state.message = ""
+			return m, nil
+		case 'e':
+			name := state.provider()
+			if name == "" {
+				state.message = "没有可编辑的 Provider"
+				return m, nil
+			}
+			if t, k, u, ok := m.runtime.GetProviderConfig(name); ok {
+				state.provAct = provActionEdit
+				state.provStep = provStepName
+				state.provInput = name
+				state.provName = name
+				state.provType = t
+				state.provKey = k
+				state.provURL = u
+			} else {
+				state.message = "无法读取 Provider 配置"
+			}
+			return m, nil
+		}
+	}
+	if state.focus == modelFocusModel {
+		switch r {
+		case 'a':
+			state.adding = true
+			state.addInput = ""
+			state.message = ""
+			return m, nil
+		case 'e':
+			oldName := state.model()
+			if oldName == "" {
+				state.message = "没有可编辑的模型"
+				return m, nil
+			}
+			state.editing = true
+			state.editingOld = oldName
+			state.addInput = oldName
+			state.message = ""
+			return m, nil
+		case 'd':
+			modelName := state.model()
+			if modelName == "" {
+				state.message = "没有可删除的模型"
+				return m, nil
+			}
+			if err := m.runtime.RemoveProviderModel(state.provider(), modelName); err != nil {
+				state.message = err.Error()
+				return m, nil
+			}
+			state.syncModels(m.runtime, "")
+			state.message = ""
+			return m, nil
+		}
+	}
+	return m, nil
+}
+
+func (m Model) handleProviderInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	state := m.modelSwitch
+
+	if msg.Type == tea.KeyEsc {
+		state.provAct = provActionNone
+		state.provInput = ""
+		state.message = ""
+		return m, nil
+	}
+
+	if state.provStep == provStepDone {
+		if msg.Type == tea.KeyEnter {
+			savedName := state.provInput
+			state.provAct = provActionNone
+			state.provInput = ""
+			state.providers = m.runtime.ConfiguredProviders()
+			for i, p := range state.providers {
+				if p == savedName {
+					state.providerIdx = i
+					break
+				}
+			}
+			state.syncModels(m.runtime, "")
+			state.message = ""
+			return m, tea.Batch(m.textarea.Focus(), fetchSnapshot(m.runtime))
+		}
+		return m, nil
+	}
+
+	// Type selection step: cycle through provider types
+	if state.provStep == provStepType && (msg.Type == tea.KeyLeft || msg.Type == tea.KeyRight) {
+		var types []string
+		if state.provAct == provActionAdd {
+			types = providerTypeOptions
+		} else {
+			types = providerTypeOptions
+		}
+		cur := state.provInput
+		idx := -1
+		for i, t := range types {
+			if t == cur {
+				idx = i
+				break
+			}
+		}
+		delta := 1
+		if msg.Type == tea.KeyLeft {
+			delta = -1
+		}
+		idx = (idx + delta + len(types)) % len(types)
+		state.provInput = types[idx]
+		return m, nil
+	}
+
+	switch msg.Type {
+	case tea.KeyEnter:
+		val := strings.TrimSpace(state.provInput)
+		switch state.provStep {
+		case provStepName:
+			if val == "" {
+				state.message = "Provider 名称不能为空"
+				return m, nil
+			}
+			state.provName = val
+			if state.provAct == provActionAdd {
+				state.provType = ""
+				state.provKey = ""
+				state.provURL = ""
+			}
+			state.provStep = provStepType
+			state.provInput = state.provType
+			state.message = ""
+			return m, nil
+		case provStepType:
+			state.provType = val
+			state.provStep = provStepAPIKey
+			state.provInput = state.provKey
+			state.message = ""
+			return m, nil
+		case provStepAPIKey:
+			state.provKey = val
+			state.provStep = provStepBaseURL
+			state.provInput = state.provURL
+			state.message = ""
+			return m, nil
+		case provStepBaseURL:
+			state.provURL = val
+			name := provCfgName(state)
+			if state.provAct == provActionAdd {
+				if err := m.runtime.AddProvider(name, state.provType, state.provKey, state.provURL); err != nil {
+					state.message = err.Error()
+					state.provAct = provActionNone
+					return m, nil
+				}
+			} else {
+				if err := m.runtime.UpdateProvider(name, state.provType, state.provKey, state.provURL); err != nil {
+					state.message = err.Error()
+					state.provAct = provActionNone
+					return m, nil
+				}
+			}
+			state.provStep = provStepDone
+			state.provInput = name
+			state.message = fmt.Sprintf("Provider %q 已保存，按 Enter 继续", name)
+			return m, nil
+		}
+		return m, nil
+	case tea.KeyBackspace:
+		if len(state.provInput) > 0 {
+			r := []rune(state.provInput)
+			state.provInput = string(r[:len(r)-1])
+		}
+		return m, nil
+	case tea.KeyRunes:
+		state.provInput += string(msg.Runes)
+		return m, nil
+	default:
+		return m, nil
+	}
+}
+
+func provCfgName(s *modelSwitchState) string {
+	if s.provAct == provActionEdit {
+		return s.provider()
+	}
+	return strings.TrimSpace(s.provName)
+}
+
+var providerStepLabels = map[providerInputStep]string{
+	provStepName:    "Provider 名称",
+	provStepType:    "API 协议类型（←→ 切换，空=自动识别）",
+	provStepAPIKey:  "API Key",
+	provStepBaseURL: "Base URL",
+}
+
+func renderProviderInput(state *modelSwitchState) []string {
+	var lines []string
+	action := "添加"
+	if state.provAct == provActionEdit {
+		action = "编辑"
+	}
+	title := lipgloss.NewStyle().Foreground(colorAccent).Bold(true).
+		Render(fmt.Sprintf("  %s Provider", action))
+	lines = append(lines, title)
+
+	steps := []providerInputStep{provStepName, provStepType, provStepAPIKey, provStepBaseURL}
+	for _, s := range steps {
+		label := providerStepLabels[s]
+		val := ""
+		if s == state.provStep {
+			display := state.provInput
+			if s == provStepAPIKey && display != "" {
+				if len(display) > 8 {
+					display = display[:4] + "****" + display[len(display)-4:]
+				} else {
+					display = "****"
+				}
+			}
+			if display == "" {
+				display = "▌"
+			} else {
+				display += "▌"
+			}
+			if s == provStepType {
+				display = state.provInput
+				if display == "" {
+					display = "自动识别"
+				}
+				display = "[" + display + "] ▌"
+			}
+			val = lipgloss.NewStyle().Foreground(colorAccent).Render(display)
+		} else if s < state.provStep {
+			v := provInputForStep(state, s)
+			if s == provStepAPIKey && v != "" {
+				v = "已设置"
+			}
+			if s == provStepType {
+				if v == "" {
+					v = "自动识别"
+				}
+			}
+			val = lipgloss.NewStyle().Foreground(colorDim).Render(v)
+		} else {
+			val = lipgloss.NewStyle().Foreground(colorDim).Render("…")
+		}
+		lines = append(lines, fmt.Sprintf("  %s: %s", label, val))
+	}
+	return lines
+}
+
+func provInputForStep(s *modelSwitchState, step providerInputStep) string {
+	switch step {
+	case provStepName:
+		return provCfgName(s)
+	case provStepType:
+		return s.provType
+	case provStepAPIKey:
+		return s.provKey
+	case provStepBaseURL:
+		return s.provURL
+	}
+	return ""
 }
 
 func renderModelSwitchBar(width int, state *modelSwitchState) string {
@@ -303,14 +731,32 @@ func renderModelSwitchBar(width int, state *modelSwitchState) string {
 	row4 := renderModelField("推理强度", state.thinkingLabel(), state.focus == modelFocusThinking)
 	hint := lipgloss.NewStyle().
 		Foreground(colorDim).
-		Italic(true).
-		Render("Tab 切字段   ←→ 切选项   Enter 应用   Esc 取消")
+		Italic(true)
 	lines := []string{
 		row1,
 		row2,
 		row3,
 		row4,
-		hint,
+	}
+	if state.provAct != provActionNone {
+		lines = append(lines, renderProviderInput(state)...)
+		lines = append(lines, hint.Render("Enter 下一步  Esc 取消"))
+	} else if state.editing {
+		prompt := fmt.Sprintf("编辑模型名: %s▏", state.addInput)
+		lines = append(lines, lipgloss.NewStyle().Foreground(colorAccent).Render(prompt))
+		lines = append(lines, hint.Render("Enter 确认  Esc 取消"))
+	} else if state.adding {
+		prompt := fmt.Sprintf("输入模型名: %s▏", state.addInput)
+		lines = append(lines, lipgloss.NewStyle().Foreground(colorAccent).Render(prompt))
+		lines = append(lines, hint.Render("Enter 确认  Esc 取消"))
+	} else {
+		hintText := "Tab 切字段   ←→ 切选项   Enter 应用   Esc 取消"
+		if state.focus == modelFocusProvider {
+			hintText = "Tab 切字段   ←→ 切选项   a 添加   d 删除   e 编辑   Enter 应用   Esc 取消"
+		} else if state.focus == modelFocusModel {
+			hintText = "Tab 切字段   ←→ 切选项   a 添加   e 编辑   d 删除   Enter 应用   Esc 取消"
+		}
+		lines = append(lines, hint.Render(hintText))
 	}
 	if state.message != "" {
 		lines = append(lines, lipgloss.NewStyle().Foreground(colorError).Italic(true).Render(truncate(state.message, width-8)))

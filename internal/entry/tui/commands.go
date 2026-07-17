@@ -88,6 +88,50 @@ func commandRegistryInstance() commandRegistry {
 			},
 		},
 		{
+			Name:        "setup",
+			Aliases:     []string{"config", "settings"},
+			Group:       "system",
+			Usage:       "/setup",
+			Description: "管理 Provider API 和角色分配",
+			AutoExecute: true,
+			Run: func(m Model, _ []string) (tea.Model, tea.Cmd) {
+				m.setup = newSetupState()
+				m.textarea.Blur()
+				return m, nil
+			},
+		},
+		{
+			Name:        "key",
+			Group:       "system",
+			Usage:       "/key <provider>",
+			Description: "快捷修改 Provider API Key",
+			AutoExecute: true,
+			Run: func(m Model, args []string) (tea.Model, tea.Cmd) {
+				if len(args) == 0 {
+					m.applyEvent(host.Event{Time: time.Now(), Category: "ERROR", Summary: "用法：/key <provider 名称>", Level: "error"})
+					m.refreshEventViewport()
+					return m, nil
+				}
+				name := args[0]
+				t, _, u, ok := m.runtime.GetProviderConfig(name)
+				if !ok {
+					m.applyEvent(host.Event{Time: time.Now(), Category: "ERROR", Summary: "Provider " + name + " 不存在", Level: "error"})
+					m.refreshEventViewport()
+					return m, nil
+				}
+				s := newSetupState()
+				s.focus = setupFocusAddStep
+				s.addStep = setupAddStepKey
+				s.addInput = ""
+				s.addName = name
+				s.addType = t
+				s.addURL = u
+				m.setup = s
+				m.textarea.Blur()
+				return m, nil
+			},
+		},
+		{
 			Name:        "diag",
 			Group:       "analysis",
 			Usage:       "/diag",

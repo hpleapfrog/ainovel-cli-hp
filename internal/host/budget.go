@@ -77,6 +77,7 @@ func (s *BudgetSentinel) OnCost(total float64) {
 		}
 	} else {
 		s.zeroStreak.Store(0)
+		s.blindWarned.Store(false)
 	}
 	if total >= s.limit*s.warnRatio && s.state.CompareAndSwap(budgetNormal, budgetWarned) {
 		s.report("warn", fmt.Sprintf("预算告警: 已花费 $%.2f，达到预算 $%.2f 的 %.0f%%", total, s.limit, s.warnRatio*100))

@@ -970,7 +970,7 @@ func (h *Host) Snapshot() UISnapshot {
 // 汇总字段留空,面板按 per-agent 数据渲染。
 func (h *Host) fillContextStatus(_ *UISnapshot) {}
 
-// fillDetails 填充详情区:设定、角色、最近 commit/review/摘要。
+// fillDetails 填充详情区:设定、角色、世界观、最近 commit/review/摘要。
 func (h *Host) fillDetails(snap *UISnapshot, progress *domain.Progress) {
 	if premise, _ := h.store.Outline.LoadPremise(); premise != "" {
 		snap.Premise = truncate(premise, 80)
@@ -1004,6 +1004,48 @@ func (h *Host) fillDetails(snap *UISnapshot, progress *domain.Progress) {
 			}
 			snap.Characters = append(snap.Characters, label)
 		}
+		// 角色状态卡：从 state_changes 推导每个角色的最新状态
+		if changes, _ := h.store.World.LoadStateChanges(); len(changes) > 0 {
+			latest := make(map[string]map[string]domain.StateChange)
+			for _, c := range changes {
+				if latest[c.Entity] == nil {
+					latest[c.Entity] = make(map[string]domain.StateChange)
+				}
+				latest[c.Entity][c.Field] = c
+			}
+			for _, c := range chars {
+				fields, ok := latest[c.Name]
+				if !ok || len(fields) == 0 {
+					continue
+				}
+				cs := CharacterStateSnapshot{Name: c.Name, Role: c.Role}
+				for _, field := range []string{"location", "status", "realm", "power", "rank", "condition"} {
+					if sc, ok := fields[field]; ok {
+						cs.Fields = append(cs.Fields, field+"="+sc.NewValue)
+					}
+				}
+				if len(cs.Fields) > 0 {
+					snap.CharacterStates = append(snap.CharacterStates, cs)
+				}
+			}
+		}
+	}
+	if worldRules, _ := h.store.World.LoadWorldRules(); len(worldRules) > 0 {
+		snap.WorldRuleCount = len(worldRules)
+		cats := make(map[string]int)
+		for _, r := range worldRules {
+			cats[r.Category]++
+		}
+		order := []string{"magic", "technology", "geography", "society", "other"}
+		for _, cat := range order {
+			if n, ok := cats[cat]; ok && n > 0 {
+				snap.WorldRuleCategories = append(snap.WorldRuleCategories,
+					fmt.Sprintf("%s×%d", cat, n))
+			}
+		}
+	}
+	if active, _ := h.store.World.LoadActiveForeshadow(); len(active) > 0 {
+		snap.ActiveForeshadowCount = len(active)
 	}
 	if ledger, _ := h.store.Cast.Load(); len(ledger) > 0 {
 		snap.SupportingCount = len(ledger)
@@ -1128,6 +1170,150 @@ func (h *Host) SwitchModel(role, provider, model string) error {
 		Summary:  fmt.Sprintf("模型已切换：%s → %s/%s", role, provider, model),
 		Level:    "info",
 	})
+	return nil
+}
+
+// AddProviderModel 向指定 provider 的模型列表追加新模型，并落盘配置。
+func (h *Host) AddProviderModel(provider, model string) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if err := h.cfg.AddProviderModel(provider, model); err != nil {
+		return err
+	}
+	path := bootstrap.DefaultConfigPath()
+	if path == "" {
+		return nil
+	}
+	if err := bootstrap.SaveConfig(path, h.cfg); err != nil {
+		return fmt.Errorf("保存配置失败: %w", err)
+	}
+	h.emitEvent(Event{
+		Time:     time.Now(),
+		Category: "SYSTEM",
+		Summary:  fmt.Sprintf("已添加模型：%s/%s", provider, model),
+		Level:    "info",
+	})
+	return nil
+}
+
+// RemoveProviderModel 从指定 provider 的模型列表移除模型，并落盘配置。
+func (h *Host) RemoveProviderModel(provider, model string) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.cfg.RemoveProviderModel(provider, model)
+	path := bootstrap.DefaultConfigPath()
+	if path == "" {
+		return nil
+	}
+	if err := bootstrap.SaveConfig(path, h.cfg); err != nil {
+		return fmt.Errorf("保存配置失败: %w", err)
+	}
+	h.emitEvent(Event{
+		Time:     time.Now(),
+		Category: "SYSTEM",
+		Summary:  fmt.Sprintf("已移除模型：%s/%s", provider, model),
+		Level:    "info",
+	})
+	return nil
+}
+
+// AddProvider 新增一个 Provider 条目并落盘配置。
+func (h *Host) AddProvider(name, apiType, apiKey, baseURL string) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	pc := bootstrap.ProviderConfig{
+		Type:    apiType,
+		APIKey:  apiKey,
+		BaseURL: baseURL,
+	}
+	if err := h.cfg.AddProvider(name, pc); err != nil {
+		return err
+	}
+	if err := h.saveConfigLocked(); err != nil {
+		return err
+	}
+	h.emitEvent(Event{
+		Time:     time.Now(),
+		Category: "SYSTEM",
+		Summary:  fmt.Sprintf("已添加 Provider：%s", name),
+		Level:    "info",
+	})
+	return nil
+}
+
+// RemoveProvider 移除一个 Provider 条目并落盘配置。默认 provider 和角色引用的 provider 不可删除。
+func (h *Host) RemoveProvider(name string) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, rc := range h.cfg.Roles {
+		if rc.Provider == name {
+			return fmt.Errorf("角色 %s 正在使用 provider %q，请先切换该角色的 provider 后再删除", rc.Provider, name)
+		}
+	}
+	if err := h.cfg.RemoveProvider(name); err != nil {
+		return err
+	}
+	if err := h.saveConfigLocked(); err != nil {
+		return err
+	}
+	h.emitEvent(Event{
+		Time:     time.Now(),
+		Category: "SYSTEM",
+		Summary:  fmt.Sprintf("已移除 Provider：%s", name),
+		Level:    "info",
+	})
+	return nil
+}
+
+// UpdateProvider 更新一个已有 Provider 的配置并落盘。非零值字段覆盖，空字符串保留原值。
+func (h *Host) UpdateProvider(name, apiType, apiKey, baseURL string) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	pc := bootstrap.ProviderConfig{}
+	if apiType != "" {
+		pc.Type = apiType
+	}
+	if apiKey != "" {
+		pc.APIKey = apiKey
+	}
+	if baseURL != "" {
+		pc.BaseURL = baseURL
+	}
+	if err := h.cfg.UpdateProvider(name, pc); err != nil {
+		return err
+	}
+	if err := h.saveConfigLocked(); err != nil {
+		return err
+	}
+	h.emitEvent(Event{
+		Time:     time.Now(),
+		Category: "SYSTEM",
+		Summary:  fmt.Sprintf("已更新 Provider：%s", name),
+		Level:    "info",
+	})
+	return nil
+}
+
+// GetProviderConfig 返回指定 provider 的当前配置（供 TUI 编辑用）。
+func (h *Host) GetProviderConfig(name string) (apiType, apiKey, baseURL string, ok bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	pc, ok := h.cfg.Providers[name]
+	if !ok {
+		return "", "", "", false
+	}
+	return pc.Type, pc.APIKey, pc.BaseURL, true
+}
+
+// saveConfigLocked 在持有 h.mu 的情况下持久化配置。
+func (h *Host) saveConfigLocked() error {
+	path := bootstrap.DefaultConfigPath()
+	if path == "" {
+		return nil
+	}
+	if err := bootstrap.SaveConfig(path, h.cfg); err != nil {
+		return fmt.Errorf("保存配置失败: %w", err)
+	}
 	return nil
 }
 

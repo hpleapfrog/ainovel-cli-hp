@@ -453,6 +453,109 @@ func (c Config) CandidateModels(provider string) []string {
 	return models
 }
 
+// AddProviderModel 向指定 provider 的 Models 列表追加一个模型名。
+func (c *Config) AddProviderModel(provider, model string) error {
+	model = strings.TrimSpace(model)
+	if provider == "" || model == "" {
+		return fmt.Errorf("provider and model are required: %w", errs.ErrConfig)
+	}
+	if c.Providers == nil {
+		c.Providers = make(map[string]ProviderConfig)
+	}
+	pc := c.Providers[provider]
+	for _, existing := range pc.Models {
+		if strings.EqualFold(existing, model) {
+			return nil
+		}
+	}
+	pc.Models = append(pc.Models, model)
+	c.Providers[provider] = pc
+	return nil
+}
+
+// RemoveProviderModel 从指定 provider 的 Models 列表中移除一个模型名。
+func (c *Config) RemoveProviderModel(provider, model string) {
+	pc, ok := c.Providers[provider]
+	if !ok {
+		return
+	}
+	filtered := pc.Models[:0]
+	for _, existing := range pc.Models {
+		if !strings.EqualFold(existing, model) {
+			filtered = append(filtered, existing)
+		}
+	}
+	pc.Models = filtered
+	c.Providers[provider] = pc
+}
+
+// AddProvider 新增一个 Provider 条目。
+func (c *Config) AddProvider(name string, pc ProviderConfig) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return fmt.Errorf("provider name is required: %w", errs.ErrConfig)
+	}
+	if c.Providers == nil {
+		c.Providers = make(map[string]ProviderConfig)
+	}
+	if _, ok := c.Providers[name]; ok {
+		return fmt.Errorf("provider %q already exists: %w", name, errs.ErrConfig)
+	}
+	c.Providers[name] = pc
+	return nil
+}
+
+// RemoveProvider 移除一个 Provider 条目；不允许移除当前正在使用的默认 provider。
+func (c *Config) RemoveProvider(name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return fmt.Errorf("provider name is required: %w", errs.ErrConfig)
+	}
+	if name == c.Provider {
+		return fmt.Errorf("cannot remove default provider %q; switch to another provider first: %w", name, errs.ErrConfig)
+	}
+	delete(c.Providers, name)
+	return nil
+}
+
+// UpdateProvider 更新一个已有 Provider 的配置；只覆盖非零值字段。
+func (c *Config) UpdateProvider(name string, pc ProviderConfig) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return fmt.Errorf("provider name is required: %w", errs.ErrConfig)
+	}
+	existing, ok := c.Providers[name]
+	if !ok {
+		return fmt.Errorf("provider %q not found: %w", name, errs.ErrConfig)
+	}
+	if pc.Type != "" {
+		existing.Type = pc.Type
+	}
+	if pc.API != "" {
+		existing.API = pc.API
+	}
+	if pc.APIKey != "" {
+		existing.APIKey = pc.APIKey
+	}
+	if pc.BaseURL != "" {
+		existing.BaseURL = pc.BaseURL
+	}
+	if pc.StreamIdleTimeout != "" {
+		existing.StreamIdleTimeout = pc.StreamIdleTimeout
+	}
+	if len(pc.Models) > 0 {
+		existing.Models = append([]string(nil), pc.Models...)
+	}
+	if len(pc.ExtraBody) > 0 {
+		existing.ExtraBody = cloneMap(pc.ExtraBody)
+	}
+	if len(pc.Extra) > 0 {
+		existing.Extra = cloneMap(pc.Extra)
+	}
+	c.Providers[name] = existing
+	return nil
+}
+
 func (c Config) validateModelRef(owner string, ref ModelRef) error {
 	if ref.Provider == "" || ref.Model == "" {
 		return fmt.Errorf("%s must have both provider and model: %w", owner, errs.ErrConfig)

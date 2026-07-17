@@ -51,8 +51,11 @@ func TestCommandChannelEnvAndStdin(t *testing.T) {
 
 	command := `echo "$NOTIFY_KIND|$NOTIFY_LEVEL|$NOTIFY_TITLE|$NOTIFY_BODY" > ` + shellQuote(envFile) + ` && cat > ` + shellQuote(jsonFile)
 	if runtime.GOOS == "windows" {
-		command = `Set-Content -LiteralPath ` + powerShellQuote(envFile) + ` -Value "$env:NOTIFY_KIND|$env:NOTIFY_LEVEL|$env:NOTIFY_TITLE|$env:NOTIFY_BODY"; ` +
-			`[Console]::In.ReadToEnd() | Set-Content -LiteralPath ` + powerShellQuote(jsonFile) + ` -NoNewline`
+		command = `$enc = New-Object System.Text.UTF8Encoding($false); ` +
+			`[System.IO.File]::WriteAllText(` + powerShellQuote(envFile) + `, "$env:NOTIFY_KIND|$env:NOTIFY_LEVEL|$env:NOTIFY_TITLE|$env:NOTIFY_BODY", $enc); ` +
+			`$reader = New-Object System.IO.StreamReader([System.Console]::OpenStandardInput(), $enc); ` +
+			`$json = $reader.ReadToEnd(); ` +
+			`[System.IO.File]::WriteAllText(` + powerShellQuote(jsonFile) + `, $json, $enc)`
 	}
 	n := New(command, nil)
 	nt := Notification{Kind: KindBudget, Level: "warn", Title: "ainovel: 预算", Body: "已花费 $8.00"}

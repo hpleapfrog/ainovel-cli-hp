@@ -104,8 +104,9 @@ type UISnapshot struct {
 	Premise          string
 	Outline          []OutlineSnapshot
 	Characters       []string
-	SupportingCount  int      // 配角名册中的次要角色总数
-	RecentSupporting []string // 最近活跃的次要角色（最多 5 个，按 LastSeenChapter 倒序）
+	CharacterStates  []CharacterStateSnapshot // 角色最新状态（位置/实力/关系等）
+	SupportingCount  int                      // 配角名册中的次要角色总数
+	RecentSupporting []string                 // 最近活跃的次要角色（最多 5 个，按 LastSeenChapter 倒序）
 	Layered          bool
 	CurrentVolumeArc string
 	NextVolumeTitle  string
@@ -117,6 +118,9 @@ type UISnapshot struct {
 	LastReviewSummary  string
 	LastCheckpointName string
 	RecentSummaries    []string
+	WorldRuleCount     int      // 世界观规则总数
+	WorldRuleCategories []string // 世界观规则分类摘要
+	ActiveForeshadowCount int   // 活跃伏笔数
 }
 
 // OutlineSnapshot 是大纲条目的展示摘要。
@@ -124,6 +128,13 @@ type OutlineSnapshot struct {
 	Chapter   int
 	Title     string
 	CoreEvent string
+}
+
+// CharacterStateSnapshot 是角色当前状态的展示投影。
+type CharacterStateSnapshot struct {
+	Name   string
+	Role   string
+	Fields []string // ["location=青云宗", "status=筑基期", "power=重伤"]
 }
 
 // AgentSnapshot 是 Agent 状态的展示投影。

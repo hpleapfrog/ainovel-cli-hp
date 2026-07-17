@@ -195,6 +195,15 @@ func continueRuntime(rt *host.Host, text string) tea.Cmd {
 	}
 }
 
+// resumeRuntime 从 checkpoint 直接恢复引擎运行，不经 Arbiter 裁定。
+// 适用场景: 暂停后用户输入简单继续指令（如"继续"/"go"等），无需语义分诊。
+func resumeRuntime(rt *host.Host) tea.Cmd {
+	return func() tea.Msg {
+		_, err := rt.Resume()
+		return continueResultMsg{err: err}
+	}
+}
+
 // resumeFromCoCreate 把阶段共创产出的后续方向 brief 注入并恢复创作。
 // 复用 continueResultMsg：成功即接 listenDone 续跑，失败回显错误。
 func resumeFromCoCreate(rt *host.Host, draft string) tea.Cmd {

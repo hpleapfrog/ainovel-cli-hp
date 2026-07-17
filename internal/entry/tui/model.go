@@ -60,6 +60,7 @@ type Model struct {
 	help           *helpState
 	modelSwitch    *modelSwitchState
 	report         *reportState
+	setup          *setupState
 	version        string
 	importer       *importState
 	importSeq      int
@@ -235,12 +236,12 @@ func (m *Model) flushStreamIfDirty() bool {
 // refreshEventViewport 重新渲染事件流内容并设置 viewport。
 func (m *Model) refreshEventViewport() {
 	centerW := m.eventFlowWidth()
-	content := renderEventContent(m.events, centerW, m.toolSpinnerIdx)
+	content := renderEventContent(m.events, centerW-3, m.toolSpinnerIdx)
 	snap := m.snapshot
 	if m.starting {
 		snap.IsRunning = true
 	}
-	if activity := renderEventActivity(snap, m.spinnerIdx, centerW); activity != "" {
+	if activity := renderEventActivity(snap, m.spinnerIdx, centerW-3); activity != "" {
 		if strings.TrimSpace(content) != "" {
 			content += "\n" + activity
 		} else {
@@ -266,7 +267,7 @@ func (m *Model) refreshDetailViewport() {
 	if rightW <= 4 {
 		return
 	}
-	m.detailVP.SetContent(renderDetailContent(m.snapshot, rightW-4))
+	m.detailVP.SetContent(renderDetailContent(m.snapshot, rightW-3))
 }
 
 // refreshStateViewport 把左侧状态侧栏内容刷进 viewport。
@@ -285,14 +286,14 @@ func (m *Model) updateViewportSize() {
 	rightW := m.detailWidth()
 	bodyH := m.bodyHeight()
 	eventH, streamH := m.splitHeights(bodyH)
-	m.viewport.Width = centerW - 2
+	m.viewport.Width = centerW - 3
 	m.viewport.Height = eventH - 1 // -1 为 event panel header 行
-	m.streamVP.Width = centerW - 2
+	m.streamVP.Width = centerW - 3
 	m.streamVP.Height = streamH - 1 // -1 为 stream panel header 行
-	m.detailVP.Width = rightW - 2
+	m.detailVP.Width = rightW - 3
 	m.detailVP.Height = bodyH
 	leftW := m.sidebarWidth()
-	m.stateVP.Width = max(1, leftW-2)
+	m.stateVP.Width = max(1, leftW-4)
 	m.stateVP.Height = max(1, bodyH-1) // -1 为顶部留白，底行直接显示内容
 	// 高度或内容变短后，自由滚动的左右两栏可能停在越界偏移上（bubbles 的
 	// SetContent 只防越过末行），viewport 会用空行补满底部。SetYOffset 自钳。
@@ -306,7 +307,7 @@ func (m *Model) splitHeights(bodyH int) (eventH, streamH int) {
 	if eventH < 3 {
 		eventH = 3
 	}
-	streamH = bodyH - eventH - 1 // -1 为分隔线
+	streamH = bodyH - eventH // 两段相加即 bodyH，与左右两栏等高
 	if streamH < 3 {
 		streamH = 3
 	}
@@ -648,21 +649,21 @@ func (m Model) View() string {
 		centerW := m.width - leftW - rightW
 		eventH, streamH := m.splitHeights(bodyH)
 
-		if m.viewport.Width != centerW-2 || m.viewport.Height != eventH-1 {
-			m.viewport.Width = centerW - 2
+		if m.viewport.Width != centerW-3 || m.viewport.Height != eventH-1 {
+			m.viewport.Width = centerW - 3
 			m.viewport.Height = eventH - 1 // -1 为 event panel header 行
 		}
-		if m.streamVP.Width != centerW-2 || m.streamVP.Height != streamH-1 {
-			m.streamVP.Width = centerW - 2
+		if m.streamVP.Width != centerW-3 || m.streamVP.Height != streamH-1 {
+			m.streamVP.Width = centerW - 3
 			m.streamVP.Height = streamH - 1 // -1 为 stream panel header 行
 		}
 
-		eventFlow := renderEventFlowViewport(m.viewport, centerW, eventH, m.paneHighlighted(focusEvents))
-		streamPanel := renderStreamPanel(m.streamVP, centerW, streamH, m.paneHighlighted(focusStream), m.snapshot.IsRunning || m.starting, m.spinnerIdx)
+		eventFlow := renderEventFlowViewport(m.viewport, centerW-1, eventH, m.paneHighlighted(focusEvents))
+		streamPanel := renderStreamPanel(m.streamVP, centerW-1, streamH, m.paneHighlighted(focusStream), m.snapshot.IsRunning || m.starting, m.spinnerIdx)
 		center := lipgloss.JoinVertical(lipgloss.Left, eventFlow, streamPanel)
 
-		left := renderStatePanel(m.stateVP, leftW, bodyH, m.paneHighlighted(focusState))
-		right := renderDetailPanel(m.detailVP, rightW, bodyH, m.paneHighlighted(focusDetail))
+		left := renderStatePanel(m.stateVP, leftW-2, bodyH, m.paneHighlighted(focusState))
+		right := renderDetailPanel(m.detailVP, rightW-1, bodyH, m.paneHighlighted(focusDetail))
 		body = lipgloss.JoinHorizontal(lipgloss.Top, left, center, right)
 	}
 
@@ -672,6 +673,9 @@ func (m Model) View() string {
 	if m.modelSwitch != nil {
 		commandBar := renderModelSwitchBar(m.width, m.modelSwitch)
 		view = overlayAboveInput(view, commandBar, inputH)
+	} else if m.setup != nil {
+		panel := renderSetup(m.width, m.height, m.setup, m.runtime)
+		view = overlayAboveInput(view, panel, inputH)
 	} else if m.compActive {
 		commandBar := renderCommandPalette(m.width, m.compItems, m.compIdx)
 		view = overlayAboveInput(view, commandBar, inputH)

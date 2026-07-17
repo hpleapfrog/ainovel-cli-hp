@@ -187,8 +187,57 @@ func renderDetailContent(snap host.UISnapshot, contentW int) string {
 		b.WriteString("\n")
 	}
 
-	// 角色
-	if len(snap.Characters) > 0 {
+	// 角色状态卡
+	if len(snap.CharacterStates) > 0 {
+		b.WriteString(panelTitleStyle.Render(":: 角色状态"))
+		b.WriteString("\n")
+		for _, cs := range snap.CharacterStates {
+			label := cs.Name
+			if cs.Role != "" {
+				label += "（" + cs.Role + "）"
+			}
+			writeBulletWrapped(&b, label, contentW, cardContentStyle)
+			if len(cs.Fields) > 0 {
+				fields := strings.Join(cs.Fields, " · ")
+				b.WriteString(lipgloss.NewStyle().Foreground(colorDim).Italic(true).
+					Render("    " + truncate(fields, contentW-6)))
+				b.WriteString("\n")
+			}
+		}
+		b.WriteString("\n")
+	}
+
+	// 世界状态卡
+	if snap.LastCheckpointName != "" || snap.WorldRuleCount > 0 || snap.ActiveForeshadowCount > 0 || snap.Layered {
+		b.WriteString(panelTitleStyle.Render(":: 世界状态"))
+		b.WriteString("\n")
+		dim := lipgloss.NewStyle().Foreground(colorDim)
+		if snap.Layered {
+			b.WriteString(dim.Render(fmt.Sprintf("  位置：%s", snap.CurrentVolumeArc)))
+			b.WriteString("\n")
+		}
+		if snap.TotalWordCount > 0 {
+			b.WriteString(dim.Render(fmt.Sprintf("  字数：%s", formatNumber(snap.TotalWordCount))))
+			b.WriteString("\n")
+		}
+		if snap.WorldRuleCount > 0 {
+			b.WriteString(dim.Render(fmt.Sprintf("  世界规则：%d 条（%s）",
+				snap.WorldRuleCount, strings.Join(snap.WorldRuleCategories, " | "))))
+			b.WriteString("\n")
+		}
+		if snap.ActiveForeshadowCount > 0 {
+			b.WriteString(dim.Render(fmt.Sprintf("  活跃伏笔：%d 条", snap.ActiveForeshadowCount)))
+			b.WriteString("\n")
+		}
+		if snap.LastCheckpointName != "" {
+			b.WriteString(dim.Render(fmt.Sprintf("  checkpoint：%s", snap.LastCheckpointName)))
+			b.WriteString("\n")
+		}
+		b.WriteString("\n")
+	}
+
+	// 角色列表（精简版，去掉已在状态卡中展示的核心角色）
+	if len(snap.Characters) > 0 && len(snap.CharacterStates) == 0 {
 		b.WriteString(panelTitleStyle.Render(":: 角色"))
 		b.WriteString("\n")
 		for _, c := range snap.Characters {

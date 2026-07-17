@@ -92,7 +92,7 @@ func renderTopBar(snap host.UISnapshot, width int, spinnerFrame, version string)
 		Render(status)
 
 	content := leftCell + centerCell + rightCell
-	return topBarStyle.Width(width).
+	return topBarStyle.Width(width - 2).
 		Border(baseBorder, false, false, true, false).
 		BorderForeground(colorDim).
 		Render(content)

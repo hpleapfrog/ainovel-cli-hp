@@ -26,6 +26,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		m.resizeTextarea()
 		m.updateViewportSize()
+		m.refreshEventViewport()
+		m.refreshStreamViewport()
 		m.refreshDetailViewport()
 		m.refreshStateViewport()
 		return m, nil
@@ -72,6 +74,8 @@ func (m Model) handleOverlayKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
 		return m.handleBlockingModalKey(msg, m.handleHelpKey)
 	case m.modelSwitch != nil:
 		return m.handleBlockingModalKey(msg, m.handleModelSwitchKey)
+	case m.setup != nil:
+		return m.handleBlockingModalKey(msg, m.handleSetupKey)
 	case m.report != nil:
 		return m.handleBlockingModalKey(msg, m.handleReportKey)
 	case m.importer != nil:
@@ -317,6 +321,9 @@ func (m Model) handleEnterKey() (tea.Model, tea.Cmd) {
 		// 不本地回显 USER 事件 —— Host.Continue/Steer 入口已 emit "USER" 事件，
 		// 走 events channel 回流到 TUI。架构 §2.3：观察层只观察，不产生事实。
 		if !m.snapshot.IsRunning {
+			if isResumeCommand(text) {
+				return m, resumeRuntime(m.runtime)
+			}
 			return m, continueRuntime(m.runtime, text)
 		}
 		return m, steerRuntime(m.runtime, text)
@@ -821,4 +828,23 @@ func (m *Model) applyRuntimeReplay(items []domain.RuntimeQueueItem) {
 	m.streamRound = len(m.streamRounds)
 	m.refreshEventViewport()
 	m.refreshStreamViewport()
+}
+
+func (m Model) handleSetupKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.setup == nil {
+		return m, nil
+	}
+	if m.setup.focus == setupFocusAddProvider {
+		return m.setup.handleProviderKey(msg, &m)
+	}
+	return m.setup.handleKey(msg, &m)
+}
+
+// isResumeCommand 判断输入是否为纯继续/恢复指令，无需 Arbiter 裁定。
+func isResumeCommand(text string) bool {
+	switch strings.ToLower(strings.TrimSpace(text)) {
+	case "继续", "go", "continue", "resume", "run", "接着写", "继续写", "恢复", "接着", "go on":
+		return true
+	}
+	return false
 }

@@ -27,7 +27,7 @@ func renderInputBox(inputView, hints string, snap host.UISnapshot, outputDir str
 
 	// 输入区（单一盒子，避免视觉上出现双输入框）
 	inputStyle := lipgloss.NewStyle().
-		Width(width).
+		Width(width - 2).
 		Border(baseBorder, true, false, true, false).
 		BorderForeground(colorDim).
 		Padding(0, 1)
@@ -35,7 +35,7 @@ func renderInputBox(inputView, hints string, snap host.UISnapshot, outputDir str
 
 	// 提示行（无边框，紧贴下横线下方）
 	hintStyle := lipgloss.NewStyle().
-		Width(width).
+		Width(width - 2).
 		Padding(0, 2)
 	hintBlock := hintStyle.Render(line2)
 
