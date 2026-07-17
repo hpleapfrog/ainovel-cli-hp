@@ -93,3 +93,22 @@ func TestUsageStore_LoadSchemaMismatch(t *testing.T) {
 		t.Errorf("schema mismatch should return nil, got %+v", got)
 	}
 }
+
+// Load 顺手清理原子写被中断遗留的 usage.json.tmp-*（进程在 tmp 与 rename 之间退出）。
+func TestUsageStore_LoadCleansStaleTmp(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "meta"), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	stale := filepath.Join(dir, "meta", "usage.json.tmp-123456")
+	if err := os.WriteFile(stale, []byte(`{}`), 0o644); err != nil {
+		t.Fatalf("seed stale tmp: %v", err)
+	}
+	us := NewUsageStore(newIO(dir))
+	if _, err := us.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Fatalf("stale tmp 应被清理, stat err=%v", err)
+	}
+}

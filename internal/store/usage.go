@@ -2,6 +2,7 @@ package store
 
 import (
 	"os"
+	"path/filepath"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
 )
@@ -15,6 +16,7 @@ func NewUsageStore(io *IO) *UsageStore { return &UsageStore{io: io} }
 // Load 读取 usage.json。文件不存在或 schema 版本不匹配时返回 (nil, nil)，
 // 由调用方决定是否走 session replay 一次性回填。
 func (s *UsageStore) Load() (*domain.UsageState, error) {
+	s.cleanStaleTmp()
 	var state domain.UsageState
 	if err := s.io.ReadJSON("meta/usage.json", &state); err != nil {
 		if os.IsNotExist(err) {
@@ -26,6 +28,15 @@ func (s *UsageStore) Load() (*domain.UsageState, error) {
 		return nil, nil
 	}
 	return &state, nil
+}
+
+// cleanStaleTmp 清理原子写被进程中断遗留的 usage.json.tmp-*（tmp 已 fsync 但未
+// rename，内容完整但永远不会再被消费）。best-effort，失败静默。
+func (s *UsageStore) cleanStaleTmp() {
+	matches, _ := filepath.Glob(s.io.path("meta/usage.json.tmp-*"))
+	for _, p := range matches {
+		_ = os.Remove(p)
+	}
 }
 
 // Save 把 state 完整覆盖落盘。调用方负责 debounce / 节流。

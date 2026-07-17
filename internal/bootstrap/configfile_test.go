@@ -301,3 +301,35 @@ func contains(s, sub string) bool {
 	}
 	return false
 }
+
+// SaveConfig 原子写：覆盖已有文件不留 tmp，内容可解析回读。
+func TestSaveConfig_AtomicOverwrite(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+
+	cfg := Config{Provider: "a", ModelName: "m1", Providers: map[string]ProviderConfig{"a": {APIKey: "sk-1"}}}
+	if err := SaveConfig(path, cfg); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+	// 覆盖写（rename 替换已存在的目标）
+	cfg.ModelName = "m2"
+	if err := SaveConfig(path, cfg); err != nil {
+		t.Fatalf("SaveConfig overwrite: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	var back Config
+	if err := json.Unmarshal(data, &back); err != nil {
+		t.Fatalf("落盘内容不可解析: %v", err)
+	}
+	if back.ModelName != "m2" {
+		t.Fatalf("覆盖未生效, got %q", back.ModelName)
+	}
+	leftovers, _ := filepath.Glob(path + ".tmp-*")
+	if len(leftovers) > 0 {
+		t.Fatalf("原子写不应留 tmp 残留: %v", leftovers)
+	}
+}
