@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/voocel/agentcore/schema"
 	"github.com/voocel/ainovel-cli/internal/domain"
@@ -86,10 +87,25 @@ func (t *PlanChapterTool) Execute(_ context.Context, args json.RawMessage) (json
 		return nil, fmt.Errorf("checkpoint chapter plan: %w", err)
 	}
 
+	warnings := checkPlanContinuity(t.store, plan)
+	nextStep := "立即调用 draft_chapter(chapter=本章节号, content=完整正文字符串) 写入正文，不要重复规划同一章"
+	if len(warnings) > 0 {
+		var warnLines []string
+		for _, w := range warnings {
+			warnLines = append(warnLines, fmt.Sprintf("[%s] %s", w.Severity, w.Message))
+		}
+		nextStep = fmt.Sprintf("规划已保存，但有 %d 条一致性提醒：\n%s\n\n请根据自己的判断处理这些问题后，调用 draft_chapter 写入正文", len(warnings), strings.Join(warnLines, "\n"))
+		return json.Marshal(map[string]any{
+			"planned":       true,
+			"chapter":       plan.Chapter,
+			"plan_warnings": warnings,
+			"next_step":     nextStep,
+		})
+	}
 	return json.Marshal(map[string]any{
 		"planned":   true,
 		"chapter":   plan.Chapter,
-		"next_step": "立即调用 draft_chapter(chapter=本章节号, content=完整正文字符串) 写入正文，不要重复规划同一章",
+		"next_step": nextStep,
 	})
 }
 

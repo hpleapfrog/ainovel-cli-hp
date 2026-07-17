@@ -1,8 +1,10 @@
 package tools
 
 import (
+	"fmt"
 	"slices"
 	"sort"
+	"strings"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/rules"
@@ -448,6 +450,8 @@ func (t *ContextTool) buildChapterWorkingMemory(envelope *chapterContextEnvelope
 	if due := foreshadowDue(state.foreshadow, state.chapter); len(due) > 0 {
 		envelope.Working["foreshadow_due"] = due
 	}
+
+	t.buildContinuityCard(envelope, state, warn)
 }
 
 func (t *ContextTool) buildChapterSelectedMemory(envelope *chapterContextEnvelope, state contextBuildState, warn func(string, error)) {
@@ -707,6 +711,127 @@ func (t *ContextTool) buildArchitectReferences(envelope *architectContextEnvelop
 	}
 
 	envelope.References["references"] = t.architectReferences()
+}
+
+// buildContinuityCard 从已落盘的状态数据中提取人物当前状态、关系、时间线关键事实，
+// 注入 working_memory.continuity_card。只反映最新一版事实，不包含推测或建议。
+func (t *ContextTool) buildContinuityCard(envelope *chapterContextEnvelope, state contextBuildState, warn func(string, error)) {
+	if state.progress == nil || len(state.progress.CompletedChapters) == 0 {
+		return
+	}
+	card := make([]string, 0, 8)
+
+	// 1. 角色当前状态：从 state_changes 中取每个 entity+field 的最新值
+	charStates := deriveCharacterState(state.allStateChanges)
+	if len(charStates) > 0 {
+		card = append(card, "## 角色当前状态（写本章前的事实基线）")
+		for _, cs := range charStates {
+			if len(cs.summary) > 0 {
+				card = append(card, fmt.Sprintf("- %s：%s", cs.name, strings.Join(cs.summary, "， ")))
+			}
+		}
+		card = append(card, "")
+	}
+
+	// 2. 最近关系变化
+	if len(state.relationships) > 0 {
+		recent := state.relationships
+		if len(recent) > 6 {
+			recent = recent[len(recent)-6:]
+		}
+		card = append(card, "## 当前关系状态")
+		seen := make(map[string]struct{})
+		for _, r := range recent {
+			key := r.CharacterA + "↔" + r.CharacterB
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			card = append(card, fmt.Sprintf("- %s ↔ %s：%s", r.CharacterA, r.CharacterB, r.Relation))
+		}
+		card = append(card, "")
+	}
+
+	// 3. 时间线锚点
+	if timeline, err := t.store.World.LoadRecentTimeline(state.chapter, state.profile.TimelineWindow); err == nil && len(timeline) > 0 {
+		last := timeline[len(timeline)-1]
+		card = append(card, "## 时间锚点")
+		card = append(card, fmt.Sprintf("- 上一章时间：%s", last.Time))
+		card = append(card, fmt.Sprintf("- 上一章事件：%s", last.Event))
+		card = append(card, "")
+	}
+
+	// 4. 硬约束：角色死亡/离开/不可用
+	var hardConstraints []string
+	for _, cs := range charStates {
+		if isHardConstraint(cs) {
+			hardConstraints = append(hardConstraints, fmt.Sprintf("- %s：%s", cs.name, cs.summary[len(cs.summary)-1]))
+		}
+	}
+	if len(hardConstraints) > 0 {
+		card = append(card, "## 写本章必须遵守的硬约束")
+		card = append(card, hardConstraints...)
+		card = append(card, "")
+	}
+
+	if len(card) > 0 {
+		card = append([]string{"本章写作前，以下事实已在之前章节中建立，写本章时**不得矛盾**："}, card...)
+		envelope.Working["continuity_card"] = strings.Join(card, "\n")
+	}
+}
+
+type charState struct {
+	name    string
+	summary []string
+}
+
+func deriveCharacterState(changes []domain.StateChange) []charState {
+	if len(changes) == 0 {
+		return nil
+	}
+	latest := make(map[string]map[string]domain.StateChange)
+	for _, c := range changes {
+		if c.Entity == "" {
+			continue
+		}
+		if latest[c.Entity] == nil {
+			latest[c.Entity] = make(map[string]domain.StateChange)
+		}
+		latest[c.Entity][c.Field] = c
+	}
+
+	var result []charState
+	for name, fields := range latest {
+		cs := charState{name: name}
+		for _, field := range []string{"status", "location", "realm", "power", "rank", "condition"} {
+			if c, ok := fields[field]; ok {
+				cs.summary = append(cs.summary, fmt.Sprintf("%s=%s", field, c.NewValue))
+			}
+		}
+		// 补充：取最后一条其他字段作为兜底描述
+		if len(cs.summary) == 0 {
+			for _, field := range []string{"alive", "affiliation", "identity", "role"} {
+				if c, ok := fields[field]; ok {
+					cs.summary = append(cs.summary, fmt.Sprintf("%s=%s", field, c.NewValue))
+				}
+			}
+		}
+		if len(cs.summary) > 0 {
+			result = append(result, cs)
+		}
+	}
+	return result
+}
+
+func isHardConstraint(cs charState) bool {
+	for _, s := range cs.summary {
+		if strings.Contains(s, "死亡") || strings.Contains(s, "dead") ||
+			strings.Contains(s, "离开") || strings.Contains(s, "消失") ||
+			strings.Contains(s, "gone") || strings.Contains(s, "destroyed") {
+			return true
+		}
+	}
+	return false
 }
 
 // ── 伏笔休眠视图 ──

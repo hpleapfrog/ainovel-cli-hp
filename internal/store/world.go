@@ -507,3 +507,53 @@ func (s *WorldStore) LoadRuleViolations(chapter int) []rules.Violation {
 	}
 	return latest
 }
+
+// ── 章节连续性机械检测事实 ──
+//
+// commit_chapter 的 continuity_issues(状态回退/关系跳变/出场漏报的机械检测结果)
+// 持久化,editor 评审该章时经 novel_context(chapter=N) 顶层 continuity_issues 读取,
+// 与 rule_violations 并列消费。追加式,同章最新一条为准。
+
+// ChapterContinuity 一章的连续性检测记录。
+type ChapterContinuity struct {
+	Chapter int                      `json:"chapter"`
+	Issues  *domain.ContinuityIssues `json:"issues,omitempty"`
+	At      string                   `json:"at"`
+}
+
+const continuityIssuesFile = "meta/continuity_issues.jsonl"
+
+// SaveContinuityIssues 追加一章的连续性检测记录(空结果也追加——覆盖旧记录,表示复测后已清)。
+func (s *WorldStore) SaveContinuityIssues(chapter int, issues *domain.ContinuityIssues) error {
+	rec := ChapterContinuity{Chapter: chapter, Issues: issues, At: time.Now().Format(time.RFC3339)}
+	data, err := json.Marshal(rec)
+	if err != nil {
+		return err
+	}
+	return s.io.AppendLine(continuityIssuesFile, append(data, '\n'))
+}
+
+// LoadContinuityIssues 读取某章最新一条连续性检测记录;无记录或结果为空返回 nil。
+func (s *WorldStore) LoadContinuityIssues(chapter int) *domain.ContinuityIssues {
+	s.io.mu.RLock()
+	defer s.io.mu.RUnlock()
+	data, err := os.ReadFile(s.io.path(continuityIssuesFile))
+	if err != nil {
+		return nil
+	}
+	var latest *domain.ContinuityIssues
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var rec ChapterContinuity
+		if json.Unmarshal([]byte(line), &rec) == nil && rec.Chapter == chapter {
+			latest = rec.Issues
+		}
+	}
+	if latest.Empty() {
+		return nil
+	}
+	return latest
+}

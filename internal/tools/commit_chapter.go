@@ -30,7 +30,8 @@ func NewCommitChapterTool(store *store.Store) *CommitChapterTool {
 // 由于嵌入字段会被 JSON marshaler 提升（promoted），序列化结果等同于扁平结构。
 type commitOutput struct {
 	domain.CommitResult
-	RuleViolations []rules.Violation `json:"rule_violations,omitempty"`
+	RuleViolations   []rules.Violation        `json:"rule_violations,omitempty"`
+	ContinuityIssues *domain.ContinuityIssues `json:"continuity_issues,omitempty"`
 }
 
 func (t *CommitChapterTool) Name() string { return "commit_chapter" }
@@ -229,7 +230,30 @@ func (t *CommitChapterTool) Execute(_ context.Context, args json.RawMessage) (js
 		}
 	}
 
-	// 4b. 累加配角名册：本章出场的非核心角色进 cast_ledger，供 novel_context 召回。
+	// 5. 一致性检测：状态回退 + 关系跳跃 + 出场漏报（仅返事实，不阻断；
+	//    落盘后经 novel_context 供 editor 消费，见下方 SaveContinuityIssues）
+	var continuityIssues *domain.ContinuityIssues
+	{
+		issues := &domain.ContinuityIssues{}
+		if allChanges, _ := t.store.World.LoadStateChanges(); len(allChanges) > 0 {
+			issues.StateRegressions = detectStateRegression(allChanges, a.StateChanges)
+		}
+		if allRelations, _ := t.store.World.LoadRelationships(); len(allRelations) > 0 {
+			issues.RelationshipJumps = detectRelationshipJump(allRelations, a.RelationshipChanges)
+		}
+		chars, _ := t.store.Characters.Load()
+		cast, _ := t.store.Cast.Load()
+		reported := append([]string{}, a.Characters...)
+		for _, ci := range a.CastIntros {
+			reported = append(reported, ci.Name)
+		}
+		issues.UnreportedCharacters = detectUnreportedCharacters(content, reported, chars, cast)
+		if !issues.Empty() {
+			continuityIssues = issues
+		}
+	}
+
+	// 6. 累加配角名册：本章出场的非核心角色进 cast_ledger，供 novel_context 召回。
 	// 失败时只 warn 不阻断 commit——名册是次要数据，可通过下一章 commit 自愈。
 	if len(a.Characters) > 0 {
 		coreNames := loadCoreCharacterNameSet(t.store)
@@ -354,7 +378,11 @@ func (t *CommitChapterTool) Execute(_ context.Context, args json.RawMessage) (js
 	if err := t.store.World.SaveRuleViolations(a.Chapter, violations); err != nil {
 		slog.Warn("机械违规落盘失败", "module", "tools", "chapter", a.Chapter, "err", err)
 	}
-	return json.Marshal(commitOutput{CommitResult: result, RuleViolations: violations})
+	// 连续性检测事实同管道落盘,editor 经 novel_context 顶层 continuity_issues 消费。
+	if err := t.store.World.SaveContinuityIssues(a.Chapter, continuityIssues); err != nil {
+		slog.Warn("连续性检测落盘失败", "module", "tools", "chapter", a.Chapter, "err", err)
+	}
+	return json.Marshal(commitOutput{CommitResult: result, RuleViolations: violations, ContinuityIssues: continuityIssues})
 }
 
 func (t *CommitChapterTool) appendCommitCheckpoint(chapter int) error {

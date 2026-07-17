@@ -151,6 +151,7 @@ Artifact 在 `store/outline.go` `drafts.go` `summaries.go` `characters.go` `worl
 - **Decisions**（`meta/decisions.jsonl`）：每次 Arbiter 裁定的审计记录（facts+input+decision），可离线重放；**不是恢复数据源**（恢复只依赖 Progress/Checkpoint/RunMeta）。
 - **大纲反馈池**（`meta/outline_feedback.jsonl`）：writer 的 commit feedback 落盘（仅分层书），architect 下次结构操作经 novel_context 参考后清空。
 - **机械违规记录**（`meta/rule_violations.jsonl`）：commit 时按 user_rules 检查的结果，editor 评审经 `novel_context(chapter=N)` 消费；best-effort 质量元数据，非与提交同级强一致。
+- **连续性检测记录**（`meta/continuity_issues.jsonl`）：commit 时机械检测的状态回退/关系跳变/出场漏报，同管道经 `novel_context(chapter=N)` 顶层 `continuity_issues` 供 editor 消费；best-effort，追加式、同章最新一条为准。
 
 ### 4.4 分层大纲与完本收敛（收官卷）
 

@@ -100,6 +100,11 @@ func (t *ContextTool) Execute(_ context.Context, args json.RawMessage) (json.Raw
 		if violations := t.store.World.LoadRuleViolations(a.Chapter); len(violations) > 0 {
 			result["rule_violations"] = violations
 		}
+		// 该章的连续性机械检测事实(commit 时落盘:状态回退/关系跳变/出场漏报):
+		// 与 rule_violations 同管道,editor 评审该章时消费。
+		if issues := t.store.World.LoadContinuityIssues(a.Chapter); issues != nil {
+			result["continuity_issues"] = issues
+		}
 		// 数据语义标注（治复读交代）：episodic 是已写入正文的备忘，不是待写素材。
 		// 只挂容器内，不进顶层镜像。
 		if epi, ok := result["episodic_memory"].(map[string]any); ok && len(epi) > 0 {

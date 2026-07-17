@@ -407,3 +407,41 @@ func TestRuleViolationsContract(t *testing.T) {
 		t.Fatalf("无记录章节应返回 nil: %+v", got)
 	}
 }
+
+// ── ContinuityIssues ──
+
+func TestContinuityIssues_SaveLoadLatestWins(t *testing.T) {
+	s := newTestStore(t)
+
+	issues := &domain.ContinuityIssues{
+		StateRegressions: []domain.StateRegression{
+			{Entity: "林砚", Field: "realm", Curr: "金丹", Next: "筑基", Severity: domain.SeverityWarning},
+		},
+	}
+	if err := s.World.SaveContinuityIssues(5, issues); err != nil {
+		t.Fatalf("SaveContinuityIssues: %v", err)
+	}
+	got := s.World.LoadContinuityIssues(5)
+	if got == nil || len(got.StateRegressions) != 1 || got.StateRegressions[0].Entity != "林砚" {
+		t.Fatalf("expected saved issues, got %+v", got)
+	}
+
+	// 空结果追加即覆盖（复测后已清）
+	if err := s.World.SaveContinuityIssues(5, nil); err != nil {
+		t.Fatalf("SaveContinuityIssues(nil): %v", err)
+	}
+	if got := s.World.LoadContinuityIssues(5); got != nil {
+		t.Fatalf("empty record should clear previous issues, got %+v", got)
+	}
+
+	// 其他章节互不影响
+	if err := s.World.SaveContinuityIssues(6, issues); err != nil {
+		t.Fatalf("SaveContinuityIssues(6): %v", err)
+	}
+	if got := s.World.LoadContinuityIssues(5); got != nil {
+		t.Fatalf("ch5 should stay cleared, got %+v", got)
+	}
+	if got := s.World.LoadContinuityIssues(6); got == nil {
+		t.Fatal("ch6 should have issues")
+	}
+}
