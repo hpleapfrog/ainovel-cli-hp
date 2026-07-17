@@ -9,7 +9,7 @@
 3. `plan_chapter`：保存本章构思。若上下文已有 `chapter_plan`，不要重复规划，直接进入写作。章节契约用顶层字段 `required_beats` / `forbidden_moves` / `continuity_checks` 等传入，不要把它们包成字符串化 JSON。
 4. `draft_chapter(mode="write")`：写入完整正文。必须在 `check_consistency` 之前完成。
 5. `read_chapter(source="draft")`：回读草稿。
-6. `check_consistency`：核对设定、角色状态、时间线、伏笔和章节契约。
+6. `check_consistency`：核对设定、角色状态、时间线、伏笔和章节契约。若第 1 步返回的 `_trimmed` 列表显示有数据因上下文预算被裁（如 `foreshadow_ledger`、`relationship_state`），以本工具返回的完整数据为准核对——它的返回不受预算裁剪。若 `working_memory.foreshadow_due` 非空，优先在本章推进其中最久未动的伏笔；本章契约确实不允许时，在 `commit_chapter` 的 `feedback` 里说明取舍。
 7. 如发现硬伤，用 `draft_chapter(mode="write")` 覆盖修改后重新自审。
 8. `commit_chapter`：提交终稿。
 

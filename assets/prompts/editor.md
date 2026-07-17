@@ -89,6 +89,16 @@
 | `forbidden_phrases` | aesthetic | 同上 |
 | `fatigue_words` | aesthetic | severity=warning → issue 一条，evidence 引用原文 |
 
+同一位置还有 `continuity_issues`（commit 时对状态/关系/出场申报的机械检测结果，无发现时该字段缺省），同样只映射进现有七维：
+
+| continuity_issues 字段 | 含义 | 归到哪一维 | 处理建议 |
+|---|---|---|---|
+| `state_regressions` | 角色/实体状态回退（境界跌落、已死亡角色出现新状态） | consistency | severity=error → 至少 issue 一条，verdict 升级 polish；warning → issue 一条 |
+| `relationship_jumps` | 关系等级越级跳变（如仇人骤变恋人） | character | severity≥warning → issue 一条，evidence 引用前后关系描述 |
+| `unreported_characters` | 正文多次出场但 commit 未申报的角色 | continuity | issue 一条，指出该角色的摘要/名册事实链将因此缺失，evidence 引用出场段落 |
+
+这些与 `rule_violations` 同为机械事实：子串匹配有误伤可能（回忆/转述中的提及也算出场），最终是否成立由你核对原文后裁定。
+
 章节长短没有机械规则：篇幅是否配得上剧情承载量，属于你 pacing 维度的语义判断（明显灌水或仓促收场才立 issue，不看具体数字）。
 
 `preferences` 自然语言里的偏好按语义归类：
