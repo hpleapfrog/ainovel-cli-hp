@@ -20,6 +20,10 @@ type ModelEntry struct {
 	OutputCostPer1M     float64 `json:"output_cost_per_1m"`     // 输出价格
 	CacheReadCostPer1M  float64 `json:"cache_read_cost_per_1m"` // 缓存读取价格
 	CacheWriteCostPer1M float64 `json:"cache_write_cost_per_1m"`
+	// HasPricing 区分"数据源没有价格信息"与"明确免费（价格为 0）"：
+	// OpenRouter 返回了 pricing 块即 true，MergeModels 据此决定要不要覆盖旧价格，
+	// 否则全零价格会被当作"无信息"，模型降价为免费永远刷新不进来。
+	HasPricing bool `json:"has_pricing,omitempty"`
 }
 
 // ModelRegistry 保存已知模型，支持模糊解析与运行期合并。
@@ -115,30 +119,8 @@ func (r *ModelRegistry) ResolveContextWindow(pattern string) int {
 	return 0
 }
 
-// List 返回所有模型（可选 filter，空字符串表示全量）。
-func (r *ModelRegistry) List(filter string) []ModelEntry {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	if filter == "" {
-		return append([]ModelEntry{}, r.models...)
-	}
-	lower := strings.ToLower(filter)
-	normalized := normalizeModelLookupID(filter)
-	var out []ModelEntry
-	for _, m := range r.models {
-		if strings.Contains(strings.ToLower(m.Provider), lower) ||
-			strings.Contains(normalizeModelLookupID(m.ID), normalized) ||
-			strings.Contains(strings.ToLower(m.ID), lower) ||
-			strings.Contains(strings.ToLower(m.Name), lower) {
-			out = append(out, m)
-		}
-	}
-	return out
-}
-
 // MergeModels 按 provider+id 大小写不敏感合并。
-// 非零价格/窗口/MaxTokens/Name 会覆盖已有条目；新增条目直接追加。
+// 带价格信息（HasPricing）/非零窗口/MaxTokens/Name 会覆盖已有条目；新增条目直接追加。
 func (r *ModelRegistry) MergeModels(fetched []ModelEntry) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -150,11 +132,12 @@ func (r *ModelRegistry) MergeModels(fetched []ModelEntry) {
 	for _, f := range fetched {
 		key := strings.ToLower(f.Provider + "/" + f.ID)
 		if i, ok := idx[key]; ok {
-			if f.InputCostPer1M > 0 || f.OutputCostPer1M > 0 {
+			if f.HasPricing {
 				r.models[i].InputCostPer1M = f.InputCostPer1M
 				r.models[i].OutputCostPer1M = f.OutputCostPer1M
 				r.models[i].CacheReadCostPer1M = f.CacheReadCostPer1M
 				r.models[i].CacheWriteCostPer1M = f.CacheWriteCostPer1M
+				r.models[i].HasPricing = true
 			}
 			if f.ContextWindow > 0 {
 				r.models[i].ContextWindow = f.ContextWindow

@@ -139,6 +139,7 @@ func convert(m apiModel) (entry, bool) {
 		e.MaxTokens = m.TopProvider.MaxCompletionTokens
 	}
 	if m.Pricing != nil {
+		e.HasPricing = true
 		e.InputCostPer1M = toMillion(m.Pricing.Prompt)
 		e.OutputCostPer1M = toMillion(m.Pricing.Completion)
 		e.CacheReadCostPer1M = toMillion(m.Pricing.InputCacheRead)

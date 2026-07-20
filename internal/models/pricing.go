@@ -189,6 +189,7 @@ func convertModel(m openRouterModel) (ModelEntry, bool) {
 		entry.MaxTokens = m.TopProvider.MaxCompletionTokens
 	}
 	if m.Pricing != nil {
+		entry.HasPricing = true
 		entry.InputCostPer1M = tokenToMillion(m.Pricing.Prompt)
 		entry.OutputCostPer1M = tokenToMillion(m.Pricing.Completion)
 		entry.CacheReadCostPer1M = tokenToMillion(m.Pricing.InputCacheRead)
