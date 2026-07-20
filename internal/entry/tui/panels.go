@@ -116,13 +116,6 @@ func renderStatePanel(vp viewport.Model, width, height int, focused bool) string
 	return style.Render(vp.View())
 }
 
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}
-
 // renderDetailPanel 渲染右侧可滚动详情面板。
 func renderDetailPanel(vp viewport.Model, width, height int, focused bool) string {
 	borderColor := colorDim

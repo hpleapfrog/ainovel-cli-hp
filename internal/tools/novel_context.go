@@ -38,13 +38,12 @@ type References struct {
 type ContextTool struct {
 	store *store.Store
 	refs  References
-	style string
 }
 
 // NewContextTool 创建上下文工具。
 // user_rules 由 buildUserRules 直接读本书快照（meta/user_rules.json）注入，不再依赖加载选项。
-func NewContextTool(store *store.Store, refs References, style string) *ContextTool {
-	return &ContextTool{store: store, refs: refs, style: style}
+func NewContextTool(store *store.Store, refs References) *ContextTool {
+	return &ContextTool{store: store, refs: refs}
 }
 
 func (t *ContextTool) Name() string { return "novel_context" }

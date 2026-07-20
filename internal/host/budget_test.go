@@ -4,7 +4,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/voocel/agentcore"
 	"github.com/voocel/ainovel-cli/internal/bootstrap"
 )
 
@@ -22,10 +21,6 @@ func (r *budgetRecorder) sentinel(cfg bootstrap.BudgetConfig) *BudgetSentinel {
 	)
 }
 
-func subagentEndEvent() agentcore.Event {
-	return agentcore.Event{Type: agentcore.EventToolExecEnd, Tool: "subagent"}
-}
-
 func TestBudgetSentinelDisabled(t *testing.T) {
 	r := &budgetRecorder{}
 	if s := r.sentinel(bootstrap.BudgetConfig{}); s != nil {
@@ -34,7 +29,9 @@ func TestBudgetSentinelDisabled(t *testing.T) {
 	// nil 安全
 	var s *BudgetSentinel
 	s.OnCost(100)
-	s.HandleEvent(subagentEndEvent())
+	if s.HandleBoundary() {
+		t.Error("nil sentinel HandleBoundary should report not-handled")
+	}
 	if err := s.Refuse(); err != nil {
 		t.Errorf("nil sentinel Refuse should pass: %v", err)
 	}
@@ -60,6 +57,14 @@ func TestBudgetSentinelWarnOnceThenBoundaryStop(t *testing.T) {
 		t.Fatalf("expected exactly one warn, got %v", r.reports)
 	}
 
+	// 未越线：边界不触发停机
+	if s.HandleBoundary() {
+		t.Fatal("boundary before exceeding should not be handled")
+	}
+	if len(r.aborts) != 0 {
+		t.Fatalf("no abort expected before exceeding, got %v", r.aborts)
+	}
+
 	// 越线：进入 stopPending，发 error，但不立即停（默认等边界）
 	s.OnCost(10.5)
 	if len(r.reports) != 2 || !strings.HasPrefix(r.reports[1], "error:") {
@@ -67,12 +72,6 @@ func TestBudgetSentinelWarnOnceThenBoundaryStop(t *testing.T) {
 	}
 	if len(r.aborts) != 0 {
 		t.Fatalf("default mode should not abort before boundary, got %v", r.aborts)
-	}
-
-	// 非边界事件不触发
-	s.HandleEvent(agentcore.Event{Type: agentcore.EventToolExecEnd, Tool: "novel_context"})
-	if len(r.aborts) != 0 {
-		t.Fatal("non-subagent boundary should not trigger stop")
 	}
 
 	// 子代理边界：恰好一次停机，重复边界不再停
@@ -109,7 +108,9 @@ func TestBudgetSentinelHardStop(t *testing.T) {
 	}
 	// 后续边界不再重复停
 	r.cost = 11
-	s.HandleEvent(subagentEndEvent())
+	if s.HandleBoundary() {
+		t.Fatal("stopped state should not handle boundary")
+	}
 	if len(r.aborts) != 1 {
 		t.Fatalf("stopped state should not abort again, got %v", r.aborts)
 	}

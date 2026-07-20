@@ -17,6 +17,7 @@ import (
 	"github.com/voocel/ainovel-cli/internal/agents/ctxpack"
 	"github.com/voocel/ainovel-cli/internal/agents/guard"
 	"github.com/voocel/ainovel-cli/internal/bootstrap"
+	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/llmutil"
 	"github.com/voocel/ainovel-cli/internal/store"
 	"github.com/voocel/ainovel-cli/internal/tools"
@@ -109,7 +110,7 @@ func BuildWorkers(
 	onGuardBlock guard.BlockHook,
 ) (*subagent.Tool, *tools.AskUserTool, *ctxpack.WriterRestorePack, ApplyThinking) {
 	// 共享工具
-	contextTool := tools.NewContextTool(store, bundle.References, cfg.Style)
+	contextTool := tools.NewContextTool(store, bundle.References)
 	readChapter := tools.NewReadChapterTool(store)
 	askUser := tools.NewAskUserTool()
 
@@ -181,7 +182,7 @@ func BuildWorkers(
 	}
 	architectThinking := llmutil.SafeThinkingLevel(architectModel, roleThinking(cfg, "architect"))
 	architectShort := subagent.Config{
-		Name:               "architect_short",
+		Name:               domain.WorkerArchitectShort,
 		Description:        "短篇规划师：为单卷、单冲突、高密度故事生成紧凑设定与扁平大纲",
 		Model:              architectModel,
 		SystemPrompt:       bundle.Prompts.ArchitectShort,
@@ -192,7 +193,7 @@ func BuildWorkers(
 		ToolsAreIdempotent: true,
 		OnMessage:          onMsg,
 		CacheLastMessage:   "ephemeral",
-		PromptCacheKey:     cacheBase + "-architect_short",
+		PromptCacheKey:     cacheBase + "-" + domain.WorkerArchitectShort,
 		StopAfterToolResult: func(toolName string, result json.RawMessage) bool {
 			r := decodeSaveFoundationResult(toolName, result)
 			return r.Type == "outline" && r.FoundationReady
@@ -200,7 +201,7 @@ func BuildWorkers(
 		StopGuardFactory: architectStopGuardFactory,
 	}
 	architectLong := subagent.Config{
-		Name:                "architect_long",
+		Name:                domain.WorkerArchitectLong,
 		Description:         "长篇规划师：为连载型、可持续升级的故事生成分层设定与卷弧大纲",
 		Model:               architectModel,
 		SystemPrompt:        bundle.Prompts.ArchitectLong,
@@ -211,7 +212,7 @@ func BuildWorkers(
 		ToolsAreIdempotent:  true,
 		OnMessage:           onMsg,
 		CacheLastMessage:    "ephemeral",
-		PromptCacheKey:      cacheBase + "-architect_long",
+		PromptCacheKey:      cacheBase + "-" + domain.WorkerArchitectLong,
 		StopAfterToolResult: architectLongShouldStopAfterToolResult,
 		StopGuardFactory:    architectStopGuardFactory,
 	}
@@ -224,7 +225,7 @@ func BuildWorkers(
 	restore.Refresh(store)
 
 	writer := subagent.Config{
-		Name:               "writer",
+		Name:               domain.WorkerWriter,
 		Description:        "创作者：自主完成一章的构思、写作、自审和提交",
 		Model:              writerModel,
 		SystemPrompt:       writerPrompt,
@@ -236,7 +237,7 @@ func BuildWorkers(
 		StopAfterTools:     []string{"commit_chapter"},
 		OnMessage:          onMsg,
 		CacheLastMessage:   "ephemeral",
-		PromptCacheKey:     cacheBase + "-writer",
+		PromptCacheKey:     cacheBase + "-" + domain.WorkerWriter,
 		StopGuardFactory: func(_, _ string) agentcore.StopGuard {
 			return guard.NewWriterStopGuard(store, onGuardBlock)
 		},
@@ -249,7 +250,7 @@ func BuildWorkers(
 				ContextWindow:    window,
 				ReserveTokens:    bootstrap.CompactReserveTokens(window),
 				KeepRecentTokens: 20000,
-				Agent:            "writer",
+				Agent:            domain.WorkerWriter,
 				// 投影提交为新 baseline。瞬态投影在越阈后每次调用都重投影、
 				// 切点滑动，等于每轮改写请求前缀（缓存全灭）；提交后回到
 				// append-only，直到下次越阈。
@@ -275,7 +276,7 @@ func BuildWorkers(
 	}
 
 	editor := subagent.Config{
-		Name:               "editor",
+		Name:               domain.WorkerEditor,
 		Description:        "审阅者：阅读原文，从结构和审美两个层面发现问题",
 		Model:              editorModel,
 		SystemPrompt:       bundle.Prompts.Editor,
@@ -286,7 +287,7 @@ func BuildWorkers(
 		ToolsAreIdempotent: true,
 		OnMessage:          onMsg,
 		CacheLastMessage:   "ephemeral",
-		PromptCacheKey:     cacheBase + "-editor",
+		PromptCacheKey:     cacheBase + "-" + domain.WorkerEditor,
 		// 终态产物命中即停。终态退出仍会咨询 StopGuard（契约测试 TestContract_
 		// TerminalToolExitConsultsStopGuard），任务感知的 NewEditorStopGuard 负责
 		// 否决"被派生成摘要却只做了复核"的提前退出，所以 save_review 可以安全硬停。
@@ -305,8 +306,8 @@ func BuildWorkers(
 		switch role {
 		case "architect":
 			level = llmutil.SafeThinkingLevel(models.ForRole("architect"), level)
-			subagentTool.SetThinkingLevel("architect_short", level)
-			subagentTool.SetThinkingLevel("architect_long", level)
+			subagentTool.SetThinkingLevel(domain.WorkerArchitectShort, level)
+			subagentTool.SetThinkingLevel(domain.WorkerArchitectLong, level)
 		case "writer", "editor":
 			level = llmutil.SafeThinkingLevel(models.ForRole(role), level)
 			subagentTool.SetThinkingLevel(role, level)

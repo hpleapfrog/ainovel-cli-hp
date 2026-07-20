@@ -22,9 +22,9 @@ import (
 // mid/long 归长篇规划师(与启动 Arbiter 的选型口径一致)。
 func plannerForTier(tier domain.PlanningTier) string {
 	if tier == domain.PlanningTierShort {
-		return "architect_short"
+		return domain.WorkerArchitectShort
 	}
-	return "architect_long"
+	return domain.WorkerArchitectLong
 }
 
 // Instruction 指示 Engine 下一步直接运行的 Worker 与任务。
@@ -77,7 +77,8 @@ type State struct {
 //  9. 下一弧是骨架           → architect_long(expand_arc)
 //
 // 10. 卷末需决策下一卷       → architect_long(append_volume / complete_book)
-// 11. 其它                  → writer(写 next_chapter)
+// 11. 非分层到点全局审阅缺失   → editor(global review)
+// 12. 其它                  → writer(写 next_chapter)
 func Route(s State) *Instruction {
 	p := s.Progress
 	if p == nil {
@@ -111,7 +112,7 @@ func Route(s State) *Instruction {
 			verb = "打磨"
 		}
 		return &Instruction{
-			Agent:   "writer",
+			Agent:   domain.WorkerWriter,
 			Task:    fmt.Sprintf("%s第 %d 章", verb, ch),
 			Reason:  fmt.Sprintf("PendingRewrites 队列剩余 %d 章", len(p.PendingRewrites)),
 			Chapter: ch,
@@ -137,31 +138,31 @@ func Route(s State) *Instruction {
 		switch {
 		case !s.HasArcReview:
 			return &Instruction{
-				Agent:  "editor",
+				Agent:  domain.WorkerEditor,
 				Task:   fmt.Sprintf("对第 %d 卷第 %d 弧做弧级评审（scope=arc）", b.Volume, b.Arc),
 				Reason: "弧末评审未完成",
 			}
 		case !s.HasArcSummary:
 			return &Instruction{
-				Agent:  "editor",
+				Agent:  domain.WorkerEditor,
 				Task:   fmt.Sprintf("生成第 %d 卷第 %d 弧摘要（save_arc_summary）", b.Volume, b.Arc),
 				Reason: "弧摘要未完成",
 			}
 		case b.IsVolumeEnd && !s.HasVolumeSummary:
 			return &Instruction{
-				Agent:  "editor",
+				Agent:  domain.WorkerEditor,
 				Task:   fmt.Sprintf("生成第 %d 卷卷摘要（save_volume_summary）", b.Volume),
 				Reason: "卷摘要未完成",
 			}
 		case b.NeedsExpansion && b.NextArc > 0:
 			return &Instruction{
-				Agent:  "architect_long",
+				Agent:  domain.WorkerArchitectLong,
 				Task:   fmt.Sprintf("展开第 %d 卷第 %d 弧（save_foundation type=expand_arc）", b.NextVolume, b.NextArc),
 				Reason: "下一弧骨架待展开",
 			}
 		case b.NeedsNewVolume:
 			return &Instruction{
-				Agent:  "architect_long",
+				Agent:  domain.WorkerArchitectLong,
 				Task:   "创建下一卷：按完结判定清单评估后调用 save_foundation——故事继续 → type=append_volume；故事接近终点 → type=append_volume 且卷 JSON 顶层带 \"final\": true（收官卷，整卷收线，写完自动完结）；全部完结条件当下已满足 → type=complete_book。三选一均须附 reason 参数写明判定理由",
 				Reason: "卷末需决定追加新卷、收官卷或结束全书",
 			}
@@ -174,7 +175,7 @@ func Route(s State) *Instruction {
 	if !p.Layered && s.LastCompleted > 0 {
 		if due, reason := domain.ShouldReview(len(p.CompletedChapters)); due && !s.HasGlobalReview {
 			return &Instruction{
-				Agent:  "editor",
+				Agent:  domain.WorkerEditor,
 				Task:   fmt.Sprintf("对前 %d 章做全局审阅（save_review scope=global, chapter=%d）", s.LastCompleted, s.LastCompleted),
 				Reason: reason,
 			}
@@ -187,7 +188,7 @@ func Route(s State) *Instruction {
 		return nil
 	}
 	return &Instruction{
-		Agent:   "writer",
+		Agent:   domain.WorkerWriter,
 		Task:    fmt.Sprintf("写第 %d 章", next),
 		Reason:  "续写下一章",
 		Chapter: next,

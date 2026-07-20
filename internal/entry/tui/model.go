@@ -71,12 +71,11 @@ type Model struct {
 	compActive     bool
 	snapshot       host.UISnapshot
 	events         []host.Event
-	eventIndex     map[string]int   // event.ID → m.events 下标；调用类事件到达时原地更新
-	viewport       viewport.Model   // 事件流 viewport
-	streamVP       viewport.Model   // 流式输出 viewport
-	detailVP       viewport.Model   // 右侧详情 viewport
-	stateVP        viewport.Model   // 左侧状态侧栏 viewport（可滚动）
-	streamBuf      *strings.Builder // 流式文本累积缓冲
+	eventIndex     map[string]int // event.ID → m.events 下标；调用类事件到达时原地更新
+	viewport       viewport.Model // 事件流 viewport
+	streamVP       viewport.Model // 流式输出 viewport
+	detailVP       viewport.Model // 右侧详情 viewport
+	stateVP        viewport.Model // 左侧状态侧栏 viewport（可滚动）
 	streamRounds   []string
 	textarea       textarea.Model
 	width          int
@@ -147,7 +146,6 @@ func NewModel(rt *host.Host, bridge *askUserBridge, version string) Model {
 		streamVP:     svp,
 		detailVP:     dvp,
 		stateVP:      stvp,
-		streamBuf:    &strings.Builder{},
 		eventIndex:   make(map[string]int),
 	}
 }

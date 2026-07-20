@@ -174,16 +174,8 @@ func NewChapterMemoryPolicy(progress *Progress, profile ContextProfile, currentO
 		if progress.Flow == FlowReviewing || progress.Flow == FlowRewriting || progress.Flow == FlowPolishing {
 			policy.HandoffPreferred = true
 		}
-		if progress.Layered && len(progress.CompletedChapters) >= 6 {
+		if (progress.Layered && len(progress.CompletedChapters) >= 6) || len(progress.CompletedChapters) >= 12 {
 			policy.HandoffPreferred = true
-		}
-		if len(progress.CompletedChapters) >= 12 {
-			policy.HandoffPreferred = true
-		}
-		if progress.Layered && len(progress.CompletedChapters) >= 6 {
-			policy.ReadOnlyThreshold = 4
-		}
-		if len(progress.CompletedChapters) >= 12 {
 			policy.ReadOnlyThreshold = 4
 		}
 	}

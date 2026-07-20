@@ -5,7 +5,6 @@ import (
 	"math"
 	"sync/atomic"
 
-	"github.com/voocel/agentcore"
 	"github.com/voocel/ainovel-cli/internal/bootstrap"
 )
 
@@ -92,18 +91,8 @@ func (s *BudgetSentinel) OnCost(total float64) {
 	}
 }
 
-// HandleEvent 在子代理边界执行待定的停机。订阅必须先于 Dispatcher。
-// 不跳过 IsError——出错返回同样是边界，停机不应因子代理失败而推迟。
-func (s *BudgetSentinel) HandleEvent(ev agentcore.Event) {
-	if s == nil {
-		return
-	}
-	if ev.Type != agentcore.EventToolExecEnd || ev.Tool != "subagent" {
-		return
-	}
-	s.HandleBoundary()
-}
-
+// HandleBoundary 在子代理边界执行待定的停机，由 Engine 在循环边界直接调用。
+// 返回 true 表示本次边界执行了停机。
 func (s *BudgetSentinel) HandleBoundary() bool {
 	if s == nil || s.state.Load() != budgetStopPending {
 		return false

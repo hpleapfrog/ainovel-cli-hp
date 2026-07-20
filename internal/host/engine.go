@@ -317,13 +317,13 @@ func (e *engine) precheck(inst *flow.Instruction) *flow.Instruction {
 		slog.Warn("完本期派发被丢弃", "module", "engine", "agent", inst.Agent)
 		return &flow.Instruction{} // Agent="" 的零值指令：由 run() 在 precheck 后判空自然返回，不再经 runWorker
 	}
-	if inst.Agent == "writer" {
+	if inst.Agent == domain.WorkerWriter {
 		if ch := writerTargetChapter(e.store); ch > 0 {
 			if err := tools.EnsureChapterExpanded(e.store, ch); err != nil {
 				// 目标章未展开 → 确定性改派 architect_long 展开(原 gate 的教学文案
 				// 是说给 LLM 的;Engine 直接做正确的事)。
 				return &flow.Instruction{
-					Agent:  "architect_long",
+					Agent:  domain.WorkerArchitectLong,
 					Task:   fmt.Sprintf("下一弧为骨架(%s)。调用 save_foundation(type=expand_arc) 展开下一弧;若当前卷已写完,改用 type=append_volume 追加并展开下一卷。", err),
 					Reason: "写作目标章未展开,先展开再续写",
 				}
@@ -397,7 +397,7 @@ func (e *engine) runWorker(ctx context.Context, inst *flow.Instruction) error {
 	slog.Info("engine 派发", "module", "engine", "agent", inst.Agent, "reason", inst.Reason)
 	e.observer.dispatchStart(inst.Agent, inst.Task)
 	// Writer 任务预标进行中(与旧 Dispatcher 一致:UI 大纲立即反映"▸ 进行中")。
-	if inst.Agent == "writer" && inst.Chapter > 0 {
+	if inst.Agent == domain.WorkerWriter && inst.Chapter > 0 {
 		if err := e.store.Progress.ValidateChapterWork(inst.Chapter); err != nil {
 			e.observer.dispatchFinish(inst.Agent, true)
 			return fmt.Errorf("%w: %w", errInvalidWriteTarget, err)

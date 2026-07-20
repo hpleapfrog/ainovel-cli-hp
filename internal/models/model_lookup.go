@@ -2,11 +2,6 @@ package models
 
 import "strings"
 
-// SameModelID 判断两个模型标识是否指向同一个规范模型（忽略日期后缀、大小写、点/横线差异）。
-func SameModelID(a, b string) bool {
-	return modelLookupMatches(normalizeModelLookupID(a), normalizeModelLookupID(b))
-}
-
 func lookupModelEntry(models []ModelEntry, providerName, modelID string) (ModelEntry, bool) {
 	providerName = strings.ToLower(strings.TrimSpace(providerName))
 	targetID := normalizeModelLookupID(modelID)

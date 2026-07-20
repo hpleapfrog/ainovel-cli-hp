@@ -150,7 +150,7 @@ func loadReferences(style string, opts LoadOptions) tools.References {
 		Differentiation:   mustRead(referencesFS, "references/differentiation.md"),
 		AntiAITone:        resolveAppendable(mustRead(referencesFS, "references/anti-ai-tone.md"), "anti-ai-tone.md", opts),
 	}
-	if style != "" && style != "default" {
+	if style != "default" {
 		genreDir := "references/genres/" + style + "/"
 		if data, err := referencesFS.ReadFile(genreDir + "style-references.md"); err == nil {
 			refs.StyleReference = string(data)

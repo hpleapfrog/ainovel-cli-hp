@@ -793,7 +793,6 @@ func (m *Model) resetOutputPanels() {
 	m.eventIndex = make(map[string]int)
 	m.viewport.SetContent("")
 	m.viewport.GotoTop()
-	m.streamBuf.Reset()
 	m.streamRounds = nil
 	m.streamVP.SetContent("")
 	m.streamVP.GotoTop()

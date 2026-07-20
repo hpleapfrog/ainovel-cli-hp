@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/voocel/agentcore"
+	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/llmutil"
 )
 
@@ -206,12 +207,12 @@ type DispatchOp struct {
 	Task  string `json:"task"`
 }
 
-// knownWorkers 是合法派单目标(与 agents.BuildWorkers 注册的一致)。
+// knownWorkers 是合法派单目标（与 agents.BuildWorkers 注册共用 domain.Worker* 常量，单一事实源）。
 var knownWorkers = map[string]bool{
-	"architect_long":  true,
-	"architect_short": true,
-	"writer":          true,
-	"editor":          true,
+	domain.WorkerArchitectLong:  true,
+	domain.WorkerArchitectShort: true,
+	domain.WorkerWriter:         true,
+	domain.WorkerEditor:         true,
 }
 
 func (d *DispatchOp) validate() error {

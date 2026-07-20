@@ -312,13 +312,13 @@ func coCreateModalSize(width, height int) (boxW, boxH int) {
 	if height <= 0 {
 		height = 24
 	}
-	boxW = minInt(maxInt(width*76/100, 88), width-4)
-	boxH = minInt(maxInt(height*72/100, 22), height-4)
+	boxW = min(max(width*76/100, 88), width-4)
+	boxH = min(max(height*72/100, 22), height-4)
 	if boxW < 64 {
-		boxW = maxInt(width-2, 42)
+		boxW = max(width-2, 42)
 	}
 	if boxH < 14 {
-		boxH = maxInt(height-2, 12)
+		boxH = max(height-2, 12)
 	}
 	return boxW, boxH
 }

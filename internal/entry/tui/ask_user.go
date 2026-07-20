@@ -186,13 +186,13 @@ func renderAskUserModal(width, height int, state *askUserState) string {
 		return ""
 	}
 	q := state.currentQuestion()
-	boxW := minInt(maxInt(width*60/100, 52), width-4)
-	boxH := minInt(maxInt(height*60/100, 16), height-4)
+	boxW := min(max(width*60/100, 52), width-4)
+	boxH := min(max(height*60/100, 16), height-4)
 	if boxW < 40 {
-		boxW = maxInt(width-2, 20)
+		boxW = max(width-2, 20)
 	}
 	if boxH < 10 {
-		boxH = maxInt(height-2, 8)
+		boxH = max(height-2, 8)
 	}
 
 	var b strings.Builder
@@ -261,18 +261,4 @@ func renderAskUserModal(width, height int, state *askUserState) string {
 		Render(b.String())
 
 	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, box)
-}
-
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-func maxInt(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }

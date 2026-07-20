@@ -7,7 +7,6 @@ const (
 	CommitStageStarted        CommitStage = "started"
 	CommitStageStateApplied   CommitStage = "state_applied"
 	CommitStageProgressMarked CommitStage = "progress_marked"
-	CommitStageSignalSaved    CommitStage = "signal_saved"
 )
 
 // PendingCommit 记录章节提交中断时的恢复信息。
