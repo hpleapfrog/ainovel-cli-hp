@@ -91,6 +91,13 @@ func (s *StoreSummaryCompactStrategy) apply(_ context.Context, msgs []agentcore.
 		return msgs, corecontext.StrategyResult{Name: s.Name()}, nil
 	}
 
+	// Duration 不承载真实耗时：本策略摘要是本地 store 读取拼接，无 LLM 调用，
+	// 耗时可忽略（agentcore 对 0 值也会兜底成 1ms）。这里借该字段经
+	// context_manager 的 duration_ms 日志通道携带压缩结果标记：
+	//   - 1ms：压缩后 tokensAfter 已回落到阈值之下（或本就无需再压）；
+	//   - 2ms：压缩后 tokensAfter 仍超阈值——预算紧张，下一轮可能还要继续压，
+	//     日志里可与"健康压缩"区分开。
+	// ForceApply 不走 Apply 入口的阈值预检，故"仍超阈"判定要自带 budget.Tokens > Threshold 前提。
 	info := &corecontext.SummaryInfo{
 		TokensBefore:   tokensBefore,
 		TokensAfter:    tokensAfter,

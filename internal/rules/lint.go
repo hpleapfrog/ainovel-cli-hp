@@ -8,7 +8,7 @@ import (
 // Lint 内置产品底线检查：扫描正文中的机制残留，与用户规则无关，commit 时始终执行。
 // 与 Check 同契约——仅返事实（铁律一），不阻断流程，由评审/用户裁定。
 //
-// 当前三类（全部来自真实长跑产物的实证缺陷）：
+// 当前两类（全部来自真实长跑产物的实证缺陷）：
 //   - markdown_residue：正文残留 ** 加粗、首行之外的 # 标题行（导出 txt 会裸露符号）
 //   - non_cjk_fragments：连续拉丁字母片段（模型语言混杂，如中文正文裸混 "pattern"）
 func Lint(text string) []Violation {

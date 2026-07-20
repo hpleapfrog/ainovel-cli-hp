@@ -1,4 +1,8 @@
 {
+  // 本文件是示例配置。三层加载：~/.ainovel/config.json（基底）→ ./.ainovel/config.json → --config 指定文件，
+  // 逐层合并：标量/map 字段按"非零值覆盖"——上层只能覆盖，不能复位/清除下层已设的值
+  // （例如想清掉全局的 reasoning_effort，只能改全局文件）；budget/notify 为整块覆盖。
+  //
   // 默认使用的 provider、model 和推理强度。
   // ★ provider 的值是下面 providers 里的一个 key 名（一根“指针”），不是协议名——
   //   改 provider 必须保证 providers 里有同名条目，否则启动会报“未配置凭证”。
