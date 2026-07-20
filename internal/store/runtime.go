@@ -165,7 +165,7 @@ func loadJSONLines[T any](io *IO, rel string) ([]T, error) {
 		}
 		var item T
 		if err := json.Unmarshal([]byte(line), &item); err != nil {
-			return nil, fmt.Errorf("parse %s: %w", rel, err)
+			continue // 跳过坏行（如崩溃留下的尾部残行），与 checkpoints/decisions 读取一致
 		}
 		out = append(out, item)
 	}

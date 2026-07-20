@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -235,7 +236,8 @@ func loadPrompt(opts cliOptions) (string, error) {
 	var data []byte
 	var err error
 	if opts.PromptFile == "-" {
-		data, err = os.ReadFile("/dev/stdin")
+		// "-" 表示从标准输入读取；/dev/stdin 在 Windows 原生不存在，不能走文件路径。
+		data, err = io.ReadAll(os.Stdin)
 	} else {
 		data, err = os.ReadFile(opts.PromptFile)
 	}

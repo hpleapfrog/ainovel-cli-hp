@@ -2,6 +2,7 @@ package host
 
 import (
 	"strings"
+	"unicode/utf16"
 	"unicode/utf8"
 )
 
@@ -50,6 +51,10 @@ type jsonFieldExtractor struct {
 
 	escape bool
 	uHex   []byte
+
+	// pendingHi 缓存 \uD800-\uDBFF 高代理码元，等待后续 \uDC00-\uDFFF 低代理合并
+	// （UTF-16 代理对，如 emoji \uD83D\uDE00）；0 表示无待合并高代理。
+	pendingHi rune
 
 	started bool // 是否已 emit 过任何字符（用于 header 与 第一个 key 之间的换行）
 
@@ -372,10 +377,8 @@ func (e *jsonFieldExtractor) handleStringByte(c byte, out *strings.Builder, skip
 	if e.uHex != nil {
 		e.uHex = append(e.uHex, c)
 		if len(e.uHex) == 4 {
-			if r, ok := parseHex4(e.uHex); ok && !skipping {
-				var buf [4]byte
-				n := utf8.EncodeRune(buf[:], r)
-				out.Write(buf[:n])
+			if r, ok := parseHex4(e.uHex); ok {
+				e.emitCodeUnit(r, out, skipping)
 			}
 			e.uHex = nil
 		}
@@ -383,11 +386,14 @@ func (e *jsonFieldExtractor) handleStringByte(c byte, out *strings.Builder, skip
 	}
 	if e.escape {
 		e.escape = false
+		if c == 'u' {
+			// 建立 uHex 缓冲；码元解析见上方 uHex 分支
+			e.uHex = make([]byte, 0, 4)
+			return
+		}
+		e.flushPendingHigh(out, skipping)
 		if !skipping {
 			writeEscapedByte(out, c)
-		}
-		if c == 'u' {
-			e.uHex = make([]byte, 0, 4)
 		}
 		return
 	}
@@ -396,12 +402,54 @@ func (e *jsonFieldExtractor) handleStringByte(c byte, out *strings.Builder, skip
 		return
 	}
 	if c == '"' {
+		e.flushPendingHigh(out, skipping)
 		e.afterValueDone()
 		return
 	}
+	e.flushPendingHigh(out, skipping)
 	if !skipping {
 		out.WriteByte(c)
 	}
+}
+
+// emitCodeUnit 处理一个解析完成的 \uXXXX 码元：高代理（D800-DBFF）先缓存等待
+// 低代理（DC00-DFFF）合并成完整 rune；其余直接输出。孤立代理（高代理后未跟低代理、
+// 或裸低代理）按现状兜底为 U+FFFD——与此前 utf8.EncodeRune 对代理区的行为一致。
+func (e *jsonFieldExtractor) emitCodeUnit(r rune, out *strings.Builder, skipping bool) {
+	switch {
+	case r >= 0xD800 && r <= 0xDBFF:
+		e.flushPendingHigh(out, skipping) // 高代理接高代理：前一个孤立
+		e.pendingHi = r
+	case r >= 0xDC00 && r <= 0xDFFF:
+		if e.pendingHi == 0 {
+			e.writeRune(utf8.RuneError, out, skipping) // 孤立低代理
+			return
+		}
+		hi := e.pendingHi
+		e.pendingHi = 0
+		e.writeRune(utf16.DecodeRune(hi, r), out, skipping)
+	default:
+		e.flushPendingHigh(out, skipping)
+		e.writeRune(r, out, skipping)
+	}
+}
+
+// flushPendingHigh 把未等到低代理的孤立高代理按 U+FFFD 兜底输出。
+func (e *jsonFieldExtractor) flushPendingHigh(out *strings.Builder, skipping bool) {
+	if e.pendingHi == 0 {
+		return
+	}
+	e.pendingHi = 0
+	e.writeRune(utf8.RuneError, out, skipping)
+}
+
+func (e *jsonFieldExtractor) writeRune(r rune, out *strings.Builder, skipping bool) {
+	if skipping {
+		return
+	}
+	var buf [4]byte
+	n := utf8.EncodeRune(buf[:], r)
+	out.Write(buf[:n])
 }
 
 func writeEscapedByte(out *strings.Builder, c byte) {
@@ -420,8 +468,6 @@ func writeEscapedByte(out *strings.Builder, c byte) {
 		out.WriteByte('/')
 	case 'b', 'f':
 		// 退格 / 换页：忽略
-	case 'u':
-		// 由调用方建立 uHex 缓冲；此处不输出
 	default:
 		out.WriteByte('\\')
 		out.WriteByte(c)

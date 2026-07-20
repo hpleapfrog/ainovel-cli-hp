@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"time"
+	"unicode/utf8"
 )
 
 // DecisionStore 审计运行时的 LLM 语义裁定(meta/decisions.jsonl,append-only)。
@@ -56,7 +57,7 @@ func (s *DecisionStore) Append(rec DecisionRecord) (DecisionRecord, error) {
 		rec.ID = newDecisionID()
 	}
 	if len(rec.Input) > maxDecisionInputBytes {
-		rec.Input = rec.Input[:maxDecisionInputBytes]
+		rec.Input = truncateUTF8(rec.Input, maxDecisionInputBytes)
 		rec.InputTruncated = true
 	}
 	data, err := json.Marshal(rec)
@@ -105,4 +106,16 @@ func newDecisionID() string {
 		return fmt.Sprintf("dec-%d", time.Now().UnixNano())
 	}
 	return "dec-" + hex.EncodeToString(b[:])
+}
+
+// truncateUTF8 按字节上限截断 s，回退到 rune 边界，避免切断多字节字符留下无效尾巴。
+func truncateUTF8(s string, maxBytes int) string {
+	if len(s) <= maxBytes {
+		return s
+	}
+	end := maxBytes
+	for end > 0 && !utf8.RuneStart(s[end]) {
+		end--
+	}
+	return s[:end]
 }

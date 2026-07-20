@@ -91,6 +91,12 @@ func (t *EditChapterTool) Execute(ctx context.Context, args json.RawMessage) (js
 		}
 	}
 
+	// 与 draft_chapter/plan_chapter 对齐：rewriting/polishing 流程下所有章节（含未完成章）
+	// 都必须在返工队列内，writing 流程下为 no-op。
+	if err := t.store.Progress.ValidateChapterWork(a.Chapter); err != nil {
+		return nil, err
+	}
+
 	// Seed：drafts 不存在时从 chapters 复制一份作为起点
 	if err := t.ensureDraft(a.Chapter); err != nil {
 		return nil, err

@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -119,8 +120,8 @@ func parseSelections(line string, options []tools.Option, multi bool) ([]string,
 			return nil, fmt.Errorf("编号不能为空")
 		}
 
-		var idx int
-		if _, err := fmt.Sscanf(part, "%d", &idx); err != nil {
+		idx, err := strconv.Atoi(part)
+		if err != nil {
 			return nil, fmt.Errorf("无法识别编号 %q", part)
 		}
 		if idx <= 0 || idx > len(options) {

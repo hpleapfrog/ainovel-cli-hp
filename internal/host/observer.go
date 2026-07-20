@@ -48,12 +48,18 @@ type activeCall struct {
 // observer 把 Engine 派发与 Worker 进度投影到 Host 的输出通道。
 // 它是纯观察者,不参与任何控制决策。
 type observer struct {
-	emitEv  func(Event)
-	emitD   func(string)
-	emitC   func()
-	store   *storepkg.Store // 用于 runtime queue 持久化（ReplayQueue 消费）
-	agents  map[string]*agentState
-	agentMu sync.Mutex
+	emitEv func(Event)
+	emitD  func(string)
+	emitC  func()
+	store  *storepkg.Store // 用于 runtime queue 持久化（ReplayQueue 消费）
+
+	// mu 统一保护 agents 及下方全部进度/流式状态。写入方不止 engine goroutine：
+	// host.go 对 h.runCtx 注册了 WithToolProgress(h.runCtx, h.observer.workerProgress)，
+	// 干预 goroutine 中的 Arbiter 调用（含 ReportToolProgress 的 ProgressRetry）会走
+	// 同一回调。持锁期间不得调用 emitEv/emitD/emitC 等外部回调（防回调重入死锁）——
+	// 一律先在锁内取数/改状态，解锁后再回调。
+	mu     sync.Mutex
+	agents map[string]*agentState
 
 	// aborting 由 Host 在 Abort()/Close() 入口置位、Start/Resume/Continue 清位。
 	// 置位期间所有 context-cancel 衍生的错误事件被抑制（既是用户期望，也避免与
@@ -124,7 +130,9 @@ func (o *observer) dispatchStart(agent, task string) {
 		a.summary = fmt.Sprintf("engine → %s", summary)
 	})
 	id := nextEventID()
+	o.mu.Lock()
 	o.dispatchStarts[agent] = &activeCall{id: id, start: time.Now(), summary: summary}
+	o.mu.Unlock()
 	o.emitAndLog(Event{
 		ID:       id,
 		Time:     time.Now(),
@@ -142,15 +150,24 @@ func (o *observer) dispatchFinish(agent string, failed bool) {
 		a.state = "idle"
 		a.tool = ""
 	})
+	// 锁内完成全部状态摘除并取出待完成调用，解锁后再发事件。
+	o.mu.Lock()
 	delete(o.lastThinkingByAgent, agent)
-	if call, ok := o.toolStarts[agent]; ok {
+	toolCall, hasTool := o.toolStarts[agent]
+	if hasTool {
 		delete(o.toolStarts, agent)
 		delete(o.streamExtractors, agent)
-		o.emitCallFinish(call, "TOOL", agent, failed)
 	}
-	if call, ok := o.dispatchStarts[agent]; ok {
+	dispatchCall, hasDispatch := o.dispatchStarts[agent]
+	if hasDispatch {
 		delete(o.dispatchStarts, agent)
-		o.emitCallFinish(call, "DISPATCH", agent, failed)
+	}
+	o.mu.Unlock()
+	if hasTool {
+		o.emitCallFinish(toolCall, "TOOL", agent, failed)
+	}
+	if hasDispatch {
+		o.emitCallFinish(dispatchCall, "DISPATCH", agent, failed)
 	}
 	o.streamClear()
 }
@@ -162,8 +179,8 @@ func (o *observer) workerProgress(p agentcore.ProgressPayload) {
 }
 
 func (o *observer) finalize() {
-	o.agentMu.Lock()
-	defer o.agentMu.Unlock()
+	o.mu.Lock()
+	defer o.mu.Unlock()
 	for _, a := range o.agents {
 		a.state = "idle"
 		a.tool = ""
@@ -178,6 +195,8 @@ func (o *observer) retryEventID(scope string, attempt int) string {
 	if strings.TrimSpace(scope) == "" {
 		scope = "engine"
 	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
 	if o.retryEvents == nil {
 		o.retryEvents = make(map[string]string)
 	}
@@ -217,8 +236,8 @@ func (o *observer) updateAgent(name string, fn func(*agentState)) {
 	if name == "" {
 		return
 	}
-	o.agentMu.Lock()
-	defer o.agentMu.Unlock()
+	o.mu.Lock()
+	defer o.mu.Unlock()
 	a, ok := o.agents[name]
 	if !ok {
 		a = &agentState{name: name, state: "idle"}
@@ -229,8 +248,8 @@ func (o *observer) updateAgent(name string, fn func(*agentState)) {
 }
 
 func (o *observer) agentSnapshots() []AgentSnapshot {
-	o.agentMu.Lock()
-	defer o.agentMu.Unlock()
+	o.mu.Lock()
+	defer o.mu.Unlock()
 	snaps := make([]AgentSnapshot, 0, len(o.agents))
 	for _, a := range o.agents {
 		snaps = append(snaps, AgentSnapshot{

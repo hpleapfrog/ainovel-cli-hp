@@ -308,3 +308,48 @@ func TestEditChapterWorksWithCommitValidation(t *testing.T) {
 		t.Fatalf("expected queue drained, got %v", progress.PendingRewrites)
 	}
 }
+
+// TestEditChapterRejectsUncompletedOutsideQueue 打磨流程下，未完成的章节若不在
+// PendingRewrites 队列中同样拒绝（与 draft_chapter 的 ValidateChapterWork 约束对齐）。
+func TestEditChapterRejectsUncompletedOutsideQueue(t *testing.T) {
+	dir := t.TempDir()
+	s := store.NewStore(dir)
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := s.Progress.Init("test", 10); err != nil {
+		t.Fatalf("InitProgress: %v", err)
+	}
+
+	// 第 2 章已完成且在打磨队列；第 5 章未完成、有草稿、但不在队列中
+	original := "第二章原始正文。"
+	if err := s.Drafts.SaveFinalChapter(2, original); err != nil {
+		t.Fatalf("SaveFinalChapter: %v", err)
+	}
+	if err := s.Progress.MarkChapterComplete(2, len([]rune(original)), "mystery", "quest"); err != nil {
+		t.Fatalf("MarkChapterComplete: %v", err)
+	}
+	if err := s.Progress.SetPendingRewrites([]int{2}, "打磨"); err != nil {
+		t.Fatalf("SetPendingRewrites: %v", err)
+	}
+	if err := s.Progress.SetFlow(domain.FlowPolishing); err != nil {
+		t.Fatalf("SetFlow: %v", err)
+	}
+	if err := s.Drafts.SaveDraft(5, "第五章未完成的草稿。"); err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
+
+	tool := NewEditChapterTool(s)
+	args, _ := json.Marshal(map[string]any{
+		"chapter":    5,
+		"old_string": "未完成",
+		"new_string": "篡改",
+	})
+	_, err := tool.Execute(context.Background(), args)
+	if err == nil {
+		t.Fatal("expected rejection for uncompleted chapter not in PendingRewrites during polishing")
+	}
+	if !errors.Is(err, errs.ErrToolConflict) {
+		t.Fatalf("expected ErrToolConflict, got %v", err)
+	}
+}

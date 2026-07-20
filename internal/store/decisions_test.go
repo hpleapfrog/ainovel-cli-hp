@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestDecisionStore_AppendAndRecent(t *testing.T) {
@@ -90,5 +91,46 @@ func TestDecisionStore_RecentSkipsCorruptLines(t *testing.T) {
 	}
 	if len(recent) != 1 || recent[0].Input != "好的" {
 		t.Fatalf("应跳过损坏行保留完整记录, got %+v", recent)
+	}
+}
+
+// 截断必须回退到 rune 边界：多字节字符不被切断，且不超 8192 字节上限。
+func TestDecisionStore_InputTruncationRuneBoundary(t *testing.T) {
+	s := NewStore(t.TempDir())
+	if err := s.Init(); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+
+	// 多字节字符恰跨越 8192 字节边界：整字丢弃，不留无效尾巴
+	input := strings.Repeat("a", maxDecisionInputBytes-3) + "长" + "尾"
+	rec, err := s.Decisions.Append(DecisionRecord{Kind: "intervention", Decider: "arbiter", Input: input})
+	if err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	if !rec.InputTruncated || len(rec.Input) != maxDecisionInputBytes {
+		t.Fatalf("应截到 %d 字节: truncated=%v len=%d", maxDecisionInputBytes, rec.InputTruncated, len(rec.Input))
+	}
+	if !strings.HasSuffix(rec.Input, "长") || !utf8.ValidString(rec.Input) {
+		t.Fatalf("截断点应在完整字符边界: suffix=%q valid=%v", rec.Input[len(rec.Input)-3:], utf8.ValidString(rec.Input))
+	}
+
+	// 多字节字符从边界前一字节开始、跨界：整字丢弃
+	input = strings.Repeat("a", maxDecisionInputBytes-2) + "长"
+	rec, err = s.Decisions.Append(DecisionRecord{Kind: "intervention", Decider: "arbiter", Input: input})
+	if err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	if !rec.InputTruncated || len(rec.Input) != maxDecisionInputBytes-2 || !utf8.ValidString(rec.Input) {
+		t.Fatalf("跨界字符应整体丢弃: truncated=%v len=%d valid=%v", rec.InputTruncated, len(rec.Input), utf8.ValidString(rec.Input))
+	}
+
+	// 多字节字符恰好在边界内完整结束：不触发截断
+	input = strings.Repeat("a", maxDecisionInputBytes-3) + "长"
+	rec, err = s.Decisions.Append(DecisionRecord{Kind: "intervention", Decider: "arbiter", Input: input})
+	if err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	if rec.InputTruncated || rec.Input != input {
+		t.Fatalf("恰好 %d 字节不应截断: truncated=%v len=%d", maxDecisionInputBytes, rec.InputTruncated, len(rec.Input))
 	}
 }

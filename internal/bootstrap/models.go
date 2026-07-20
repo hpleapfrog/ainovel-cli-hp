@@ -99,7 +99,10 @@ func (m *SwappableModel) Current() (provider, name string) {
 
 // ModelSet 持有按角色分配的模型实例，未配置的角色回退到默认模型。
 type ModelSet struct {
-	Default   *SwappableModel
+	Default *SwappableModel
+	// mu 保护 models map：TUI 运行中切角色模型（Swap）与 ForRole 等读路径并发。
+	// fallbacks 与 config 仅在 NewModelSet 写入、之后只读，无需锁保护。
+	mu        sync.RWMutex
 	models    map[string]*SwappableModel
 	fallbacks map[string][]modelTarget
 	config    Config
@@ -107,6 +110,8 @@ type ModelSet struct {
 
 // ForRole 返回指定角色的模型，未配置时返回默认模型。
 func (ms *ModelSet) ForRole(role string) agentcore.ChatModel {
+	ms.mu.RLock()
+	defer ms.mu.RUnlock()
 	if m, ok := ms.models[role]; ok {
 		return m
 	}
@@ -116,6 +121,8 @@ func (ms *ModelSet) ForRole(role string) agentcore.ChatModel {
 // ForRoleWithFailover 返回带有单次请求级 fallback 的角色模型。
 // 仅当该角色显式配置了 fallbacks 时生效；未配置时退化为普通模型。
 func (ms *ModelSet) ForRoleWithFailover(role string, report FailoverReporter) agentcore.ChatModel {
+	ms.mu.RLock()
+	defer ms.mu.RUnlock()
 	primary, ok := ms.models[role]
 	if !ok {
 		return ms.Default
@@ -134,6 +141,8 @@ func (ms *ModelSet) ForRoleWithFailover(role string, report FailoverReporter) ag
 
 // Summary 返回模型分配摘要（供日志使用）。
 func (ms *ModelSet) Summary() string {
+	ms.mu.RLock()
+	defer ms.mu.RUnlock()
 	var parts []string
 	for role, m := range ms.models {
 		provider, name := m.Current()
@@ -154,7 +163,10 @@ func (ms *ModelSet) CurrentSelection(role string) (provider, model string, expli
 		provider, model = ms.Default.Current()
 		return provider, model, true
 	}
-	if sw, ok := ms.models[role]; ok {
+	ms.mu.RLock()
+	sw, ok := ms.models[role]
+	ms.mu.RUnlock()
+	if ok {
 		provider, model = sw.Current()
 		return provider, model, true
 	}
@@ -183,6 +195,8 @@ func (ms *ModelSet) Swap(role, provider, model string) error {
 		return fmt.Errorf("unknown role %q: %w", role, errs.ErrConfig)
 	}
 
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
 	if existing, ok := ms.models[role]; ok {
 		existing.Swap(provider, model, next)
 		return nil

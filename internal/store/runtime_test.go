@@ -134,3 +134,44 @@ func TestRuntimeStoreReset(t *testing.T) {
 		t.Fatalf("expected empty task log after reset, got %d", len(logs))
 	}
 }
+
+// 崩溃留下的尾部坏行不应让 LoadQueue/LoadQueueAfter 整体失败（与 checkpoints/decisions 一致）。
+func TestRuntimeStoreLoadQueueSkipsCorruptLines(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStore(dir)
+
+	if _, err := store.Runtime.AppendQueue(domain.RuntimeQueueItem{
+		Kind:    domain.RuntimeQueueUIEvent,
+		Summary: "good",
+	}); err != nil {
+		t.Fatalf("AppendQueue: %v", err)
+	}
+	// 模拟崩溃留下的尾部残行
+	if err := store.Runtime.io.AppendLine(runtimeQueuePath, []byte(`{"seq":2,"kind":"uiev`+"\n")); err != nil {
+		t.Fatalf("append corrupt: %v", err)
+	}
+
+	items, err := store.Runtime.LoadQueue()
+	if err != nil {
+		t.Fatalf("坏行不应让 LoadQueue 失败: %v", err)
+	}
+	if len(items) != 1 || items[0].Summary != "good" {
+		t.Fatalf("应跳过坏行保留完整记录, got %+v", items)
+	}
+	if _, err := store.Runtime.LoadQueueAfter(0); err != nil {
+		t.Fatalf("坏行不应让 LoadQueueAfter 失败: %v", err)
+	}
+
+	// 新实例从磁盘恢复 seq：坏行跳过，从最后一条好记录继续编号
+	fresh := NewRuntimeStore(newIO(dir))
+	next, err := fresh.AppendQueue(domain.RuntimeQueueItem{
+		Kind:    domain.RuntimeQueueUIEvent,
+		Summary: "next",
+	})
+	if err != nil {
+		t.Fatalf("AppendQueue after corrupt: %v", err)
+	}
+	if next.Seq != 2 {
+		t.Fatalf("seq 应从好记录恢复为 2, got %d", next.Seq)
+	}
+}

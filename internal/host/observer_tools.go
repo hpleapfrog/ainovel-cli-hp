@@ -28,7 +28,9 @@ func (o *observer) handleToolUpdate(ev agentcore.Event) {
 			break
 		}
 		toolName := displayToolName(ev.Progress.Tool, ev.Progress.Args)
+		o.mu.Lock()
 		if _, ok := o.toolStarts[ev.Progress.Agent]; ok {
+			o.mu.Unlock()
 			o.updateToolCallSummary(ev.Progress.Agent, ev.Progress.Tool, toolName)
 			o.updateAgent(ev.Progress.Agent, func(a *agentState) {
 				a.state = "working"
@@ -43,6 +45,7 @@ func (o *observer) handleToolUpdate(ev agentcore.Event) {
 		// 无 extractor 的工具流式面板上就没有 ✻ 头部，紧贴前面思考一段。）
 		id := nextEventID()
 		o.toolStarts[ev.Progress.Agent] = &activeCall{id: id, start: time.Now(), summary: toolName, depth: 1}
+		o.mu.Unlock()
 		o.emitAndLog(Event{
 			ID:       id,
 			Time:     time.Now(),
@@ -59,15 +62,16 @@ func (o *observer) handleToolUpdate(ev agentcore.Event) {
 		})
 		o.emitFallbackStreamHeader(ev.Progress.Tool)
 	case agentcore.ProgressToolEnd:
+		o.mu.Lock()
 		delete(o.streamExtractors, ev.Progress.Agent)
-		if ev.Progress.Agent == "" {
-			return
-		}
 		call, ok := o.toolStarts[ev.Progress.Agent]
-		if !ok {
+		if ok {
+			delete(o.toolStarts, ev.Progress.Agent)
+		}
+		o.mu.Unlock()
+		if ev.Progress.Agent == "" || !ok {
 			return
 		}
-		delete(o.toolStarts, ev.Progress.Agent)
 		// 同 ID 更新事件：TUI 按 ID 定位原 TOOL 行，回填 FinishedAt / Duration。
 		// Summary / Depth 也带上，保证 runtime queue replay 时能还原完整行。
 		finishEv := Event{
@@ -104,14 +108,19 @@ func (o *observer) handleToolUpdate(ev agentcore.Event) {
 		o.emitEv(retryEv)
 		o.persistEvent(retryEv)
 	case agentcore.ProgressToolError:
+		o.mu.Lock()
 		delete(o.streamExtractors, ev.Progress.Agent)
+		call, hasCall := o.toolStarts[ev.Progress.Agent]
+		if hasCall {
+			delete(o.toolStarts, ev.Progress.Agent)
+		}
+		o.mu.Unlock()
 		msg := ev.Progress.Message
 		if msg == "" {
 			msg = "unknown error"
 		}
 		// 如果有进行中的 TOOL 行，原地标记为失败；否则独立追加 ERROR 行。
-		if call, ok := o.toolStarts[ev.Progress.Agent]; ok {
-			delete(o.toolStarts, ev.Progress.Agent)
+		if hasCall {
 			finishEv := Event{
 				ID:         call.id,
 				Time:       call.start,
@@ -189,19 +198,23 @@ func (o *observer) updateToolCallSummary(agent, tool, summary string) {
 	if agent == "" || summary == "" {
 		return
 	}
+	o.mu.Lock()
 	call, ok := o.toolStarts[agent]
 	if !ok || call.summary == summary {
+		o.mu.Unlock()
 		return
 	}
 	call.summary = summary
+	id, start, depth := call.id, call.start, call.depth
+	o.mu.Unlock()
 	o.emitEv(Event{
-		ID:       call.id,
-		Time:     call.start,
+		ID:       id,
+		Time:     start,
 		Category: "TOOL",
 		Agent:    agent,
 		Summary:  summary,
 		Level:    "info",
-		Depth:    call.depth,
+		Depth:    depth,
 	})
 	o.updateAgent(agent, func(a *agentState) {
 		a.state = "working"
@@ -212,6 +225,7 @@ func (o *observer) updateToolCallSummary(agent, tool, summary string) {
 
 func (o *observer) updateToolCallSummaryFromDelta(agent, tool, delta string) {
 	key := streamArgKey(agent, tool)
+	o.mu.Lock()
 	prefix := o.streamArgPrefixes[key] + delta
 	if len(prefix) > 512 {
 		prefix = prefix[:512]
@@ -219,13 +233,12 @@ func (o *observer) updateToolCallSummaryFromDelta(agent, tool, delta string) {
 	o.streamArgPrefixes[key] = prefix
 
 	summary := streamedToolLabel(tool, prefix)
-	if summary == "" {
-		return
-	}
-	if o.streamArgLabels[key] == summary {
+	if summary == "" || o.streamArgLabels[key] == summary {
+		o.mu.Unlock()
 		return
 	}
 	o.streamArgLabels[key] = summary
+	o.mu.Unlock()
 	o.updateToolCallSummary(agent, tool, summary)
 }
 

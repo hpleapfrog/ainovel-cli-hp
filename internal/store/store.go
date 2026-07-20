@@ -34,8 +34,7 @@ type Store struct {
 
 // NewStore 创建状态管理器，dir 为小说输出根目录。
 func NewStore(dir string) *Store {
-	io := newIO(dir)
-	outline := NewOutlineStore(io)
+	outline := NewOutlineStore(newIO(dir))
 	return &Store{
 		dir:         dir,
 		Progress:    NewProgressStore(newIO(dir)),
@@ -49,7 +48,7 @@ func NewStore(dir string) *Store {
 		Characters:  NewCharacterStore(newIO(dir), outline),
 		Cast:        NewCastStore(newIO(dir)),
 		World:       NewWorldStore(newIO(dir)),
-		Checkpoints: NewCheckpointStore(io),
+		Checkpoints: NewCheckpointStore(newIO(dir)),
 		Sessions:    NewSessionStore(newIO(dir)),
 		Usage:       NewUsageStore(newIO(dir)),
 		Simulation:  NewSimulationStore(newIO(dir)),
@@ -63,7 +62,8 @@ func (s *Store) Dir() string { return s.dir }
 // CheckConsistency 对事实层做一次浅层校验，用于启动/恢复时生成 warning。
 // 纯只读：不修正数据，仅返回可读的问题描述。调用方决定如何展示（log / UI）。
 // 为避免扫全目录带来的 IO 开销，只校验 Progress 的关键点：
-//   - 最后一个完成章节必须在 chapters/ 下存在终稿
+//   - 最新完成章节（CompletedChapters 最大值，与 domain.Progress.LatestCompleted 同口径）
+//     必须在 chapters/ 下存在终稿
 //   - Layered 模式下，当前 Volume/Arc 必须能在 layered_outline 中找到
 func (s *Store) CheckConsistency() []string {
 	var warnings []string
@@ -71,8 +71,7 @@ func (s *Store) CheckConsistency() []string {
 	if err != nil || progress == nil {
 		return warnings
 	}
-	if n := len(progress.CompletedChapters); n > 0 {
-		lastCh := progress.CompletedChapters[n-1]
+	if lastCh := progress.LatestCompleted(); lastCh > 0 {
 		if text, err := s.Drafts.LoadChapterText(lastCh); err == nil && text == "" {
 			warnings = append(warnings, fmt.Sprintf("progress 标记第 %d 章已完成，但 chapters/%02d.md 不存在或为空", lastCh, lastCh))
 		}

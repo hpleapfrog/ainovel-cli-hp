@@ -118,7 +118,8 @@ func (s *DraftStore) LoadChapterRange(from, to, maxRunes int) (map[int]string, e
 	return result, nil
 }
 
-var dialogueRe = regexp.MustCompile(`"[^"]*"`)
+// 对白引号：兼容 ASCII 双引号与中文弯引号；不处理转义与嵌套。
+var dialogueRe = regexp.MustCompile(`"[^"]*"|“[^”]*”`)
 
 // ExtractDialogue 从已提交章节中提取指定角色的对话片段。
 // maxCompletedChapter 由调用方传入，避免跨域依赖。

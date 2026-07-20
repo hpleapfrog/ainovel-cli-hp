@@ -57,6 +57,8 @@ func (s Scope) String() string {
 }
 
 // Matches 判断两个 Scope 是否相同。
+// 调用方向约定为 record.Matches(query)：global 与 global 相等；
+// 未知 Kind（未来新增 ScopeKind 忘了改这里）返回 false 而非静默全匹配。
 func (s Scope) Matches(other Scope) bool {
 	if s.Kind != other.Kind {
 		return false
@@ -68,8 +70,10 @@ func (s Scope) Matches(other Scope) bool {
 		return s.Volume == other.Volume && s.Arc == other.Arc
 	case ScopeVolume:
 		return s.Volume == other.Volume
-	default:
+	case ScopeGlobal:
 		return true
+	default:
+		return false
 	}
 }
 

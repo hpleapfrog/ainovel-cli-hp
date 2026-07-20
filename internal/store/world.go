@@ -71,7 +71,8 @@ func (s *WorldStore) AppendTimelineEvents(newEvents []domain.TimelineEvent) erro
 	})
 }
 
-// LoadRecentTimeline 返回最近 window 章内的时间线事件。
+// LoadRecentTimeline 返回最近 window 章内的时间线事件（含 current 章本身；
+// 排除未来章事件——导入管线批量写入后可能存在 Chapter > current 的事件）。
 func (s *WorldStore) LoadRecentTimeline(current, window int) ([]domain.TimelineEvent, error) {
 	all, err := s.LoadTimeline()
 	if err != nil {
@@ -80,7 +81,7 @@ func (s *WorldStore) LoadRecentTimeline(current, window int) ([]domain.TimelineE
 	minCh := max(current-window, 1)
 	var filtered []domain.TimelineEvent
 	for _, e := range all {
-		if e.Chapter >= minCh {
+		if e.Chapter >= minCh && e.Chapter <= current {
 			filtered = append(filtered, e)
 		}
 	}

@@ -25,6 +25,7 @@ func (o *observer) handleSubagentDelta(p *agentcore.ProgressPayload) {
 	o.ensureSubagentToolStarted(p.Agent, p.Tool)
 	o.updateToolCallSummaryFromDelta(p.Agent, p.Tool, p.Delta)
 
+	o.mu.Lock()
 	cur, ok := o.streamExtractors[p.Agent]
 	// 同工具调用 args 已闭合（顶层 } 命中）后，仍可能收到 trailing delta：
 	// 某些 provider（deepseek-v4-flash 实测）会把单次 args 拆成多个 chunk，
@@ -32,6 +33,7 @@ func (o *observer) handleSubagentDelta(p *agentcore.ProgressPayload) {
 	// Done 即重建"处理，新 extractor 又会 emit 一次 ✻ header 并把尾段 token
 	// 当作新 args 解析。这些 delta 是冗余尾巴，丢弃即可。
 	if ok && cur.tool == p.Tool && cur.ext.Done() {
+		o.mu.Unlock()
 		return
 	}
 	// 工具名变了或还没建过：新建。
@@ -39,41 +41,55 @@ func (o *observer) handleSubagentDelta(p *agentcore.ProgressPayload) {
 		ext := newToolExtractor(p.Tool)
 		if ext == nil {
 			delete(o.streamExtractors, p.Agent)
+			o.mu.Unlock()
 			return
 		}
 		cur = &agentExtractor{tool: p.Tool, ext: ext}
 		o.streamExtractors[p.Agent] = cur
 	}
-	if emitted := cur.ext.Feed(p.Delta); emitted != "" {
-		if !cur.emittedAny {
-			cur.emittedAny = true
-			// streamClear 让 extractor 的 ✻ header 落在新 round 起点，配合
-			// renderStreamContent 的 HasPrefix("✻") 检查走 renderAgentBlock 高亮
-			// 路径；用 ensureStreamParagraphBreak 只插空行不开 round，✻ 仍会被
-			// 前面的 thinking/正文包住，落到 renderChapterBlock 用默认色画掉。
-			o.streamClear()
-			// streamClear 防御性清空了 streamExtractors。当前 cur 还要继续 Feed
-			// 本工具调用后续的 delta，必须立刻把它重新登记回去；否则下一段 delta
-			// 来时会新建 extractor，从 args 中段开始解析（在嵌套对象的 `{` 处
-			// 才进入 psBeforeKey），把 timeline_events.time / foreshadow_updates.id
-			// 等当成顶层字段，TUI 上重复出现 ✻ header。
-			o.streamExtractors[p.Agent] = cur
-		}
-		o.emitStreamDelta(emitted, false)
+	// Feed 只写内部 buffer、不触外部回调，放在锁内以串行化同一 extractor 的并发喂入。
+	emitted := cur.ext.Feed(p.Delta)
+	first := emitted != "" && !cur.emittedAny
+	if first {
+		cur.emittedAny = true
 	}
+	o.mu.Unlock()
+	if emitted == "" {
+		return
+	}
+	if first {
+		// streamClear 让 extractor 的 ✻ header 落在新 round 起点，配合
+		// renderStreamContent 的 HasPrefix("✻") 检查走 renderAgentBlock 高亮
+		// 路径；用 ensureStreamParagraphBreak 只插空行不开 round，✻ 仍会被
+		// 前面的 thinking/正文包住，落到 renderChapterBlock 用默认色画掉。
+		o.streamClear()
+		// streamClear 防御性清空了 streamExtractors。当前 cur 还要继续 Feed
+		// 本工具调用后续的 delta，必须立刻把它重新登记回去；否则下一段 delta
+		// 来时会新建 extractor，从 args 中段开始解析（在嵌套对象的 `{` 处
+		// 才进入 psBeforeKey），把 timeline_events.time / foreshadow_updates.id
+		// 等当成顶层字段，TUI 上重复出现 ✻ header。
+		o.mu.Lock()
+		o.streamExtractors[p.Agent] = cur
+		o.mu.Unlock()
+	}
+	o.emitStreamDelta(emitted, false)
 }
 
 func (o *observer) emitStreamDelta(delta string, thinking bool) {
 	if delta == "" {
 		return
 	}
-	if thinking != o.streamThinking {
-		o.emitD(utils.ThinkingSep)
-		o.streamThinking = thinking
-	}
-	o.emitD(delta)
+	// 锁内更新流式状态并判定是否需要分隔符，解锁后再 emit。
+	o.mu.Lock()
+	needSep := thinking != o.streamThinking
+	o.streamThinking = thinking
 	o.streamHasContent = true
 	o.streamLastByte = delta[len(delta)-1]
+	o.mu.Unlock()
+	if needSep {
+		o.emitD(utils.ThinkingSep)
+	}
+	o.emitD(delta)
 }
 
 // ensureSubagentToolStarted 在流式识别到 tool_call 首次出现时，提前为该 agent
@@ -84,10 +100,12 @@ func (o *observer) ensureSubagentToolStarted(agent, tool string) {
 	if agent == "" || tool == "" {
 		return
 	}
+	o.mu.Lock()
 	if _, ok := o.toolStarts[agent]; ok {
+		o.mu.Unlock()
 		return // 已有进行中调用，幂等
 	}
-	o.resetStreamArgLabel(agent, tool)
+	o.resetStreamArgLabelLocked(agent, tool)
 	id := nextEventID()
 	o.toolStarts[agent] = &activeCall{
 		id:      id,
@@ -95,6 +113,7 @@ func (o *observer) ensureSubagentToolStarted(agent, tool string) {
 		summary: tool, // 先用纯工具名，ProgressToolStart 到来时可能更新为 tool(第N章)
 		depth:   1,
 	}
+	o.mu.Unlock()
 	o.emitAndLog(Event{
 		ID:       id,
 		Time:     time.Now(),
@@ -111,7 +130,8 @@ func (o *observer) ensureSubagentToolStarted(agent, tool string) {
 	o.emitFallbackStreamHeader(tool)
 }
 
-func (o *observer) resetStreamArgLabel(agent, tool string) {
+// resetStreamArgLabelLocked 清空该 agent/tool 的参数流识别缓存；调用方须持有 o.mu。
+func (o *observer) resetStreamArgLabelLocked(agent, tool string) {
 	key := streamArgKey(agent, tool)
 	delete(o.streamArgPrefixes, key)
 	delete(o.streamArgLabels, key)
@@ -155,7 +175,7 @@ func streamHeaderFallback(tool string) string {
 // 抢先占头，renderStreamContent 的 HasPrefix("✻") 失配，整段落到正文路径
 // 再被 ThinkingSep 切分为思考段，title 颜色被画成思考色。
 func (o *observer) streamClear() {
-	o.emitC()
+	o.mu.Lock()
 	o.streamHasContent = false
 	o.streamLastByte = 0
 	o.streamThinking = false
@@ -163,4 +183,6 @@ func (o *observer) streamClear() {
 	if len(o.streamExtractors) > 0 {
 		o.streamExtractors = make(map[string]*agentExtractor)
 	}
+	o.mu.Unlock()
+	o.emitC()
 }

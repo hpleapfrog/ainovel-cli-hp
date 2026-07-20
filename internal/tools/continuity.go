@@ -76,14 +76,21 @@ func isDeadState(s string) bool {
 
 // ── 2. 关系跳跃检测 ──
 
-var relationLevels = map[string]int{
-	"仇人": -3, "死敌": -3, "不共戴天": -3,
-	"敌人": -2, "对手": -2, "宿敌": -2,
-	"疏远": -1, "冷淡": -1, "不和": -1, "芥蒂": -1,
-	"陌生人": 0, "路人": 0, "萍水相逢": 0,
-	"认识": 1, "相识": 1, "点头之交": 1,
-	"朋友": 2, "同伴": 2, "盟友": 2, "师徒": 2, "主仆": 2, "同门": 2, "搭档": 2,
-	"恋人": 3, "挚友": 3, "夫妻": 3, "生死之交": 3, "道侣": 3, "结义": 3,
+// relationLevels 关系关键词 → 亲密度等级，遍历顺序即匹配优先级（按特异性
+// |等级| 从高到低），一条关系文本同时含多个关键词时首个命中生效。
+// 必须是有序切片而非 map：map 迭代顺序随机，「昔日仇人今日盟友」这类多关键词
+// 文本每次运行可能归到不同等级，检测结果不可复现。
+var relationLevels = []struct {
+	keyword string
+	level   int
+}{
+	{"仇人", -3}, {"死敌", -3}, {"不共戴天", -3},
+	{"恋人", 3}, {"挚友", 3}, {"夫妻", 3}, {"生死之交", 3}, {"道侣", 3}, {"结义", 3},
+	{"敌人", -2}, {"对手", -2}, {"宿敌", -2},
+	{"朋友", 2}, {"同伴", 2}, {"盟友", 2}, {"师徒", 2}, {"主仆", 2}, {"同门", 2}, {"搭档", 2},
+	{"疏远", -1}, {"冷淡", -1}, {"不和", -1}, {"芥蒂", -1},
+	{"认识", 1}, {"相识", 1}, {"点头之交", 1},
+	{"陌生人", 0}, {"路人", 0}, {"萍水相逢", 0},
 }
 
 func detectRelationshipJump(allRelations []domain.RelationshipEntry, incoming []domain.RelationshipEntry) []domain.RelationshipJump {
@@ -148,9 +155,9 @@ func relationKey(a, b string) string {
 
 func classifyRelation(rel string) int {
 	rel = strings.TrimSpace(rel)
-	for keyword, level := range relationLevels {
-		if strings.Contains(rel, keyword) {
-			return level
+	for _, rl := range relationLevels {
+		if strings.Contains(rel, rl.keyword) {
+			return rl.level
 		}
 	}
 	// 兜底：正向词 vs 负向词
@@ -315,9 +322,13 @@ func checkPlanContinuity(st *store.Store, plan domain.ChapterPlan) []PlanWarning
 		}
 	}
 
-	// 大纲约束：plan 是否包含 forbidden_moves
+	// 大纲约束：plan 是否包含 forbidden_moves（单向判定：计划文本命中禁止项即提醒；
+	// planText 是多字段拼接长文，反向包含几乎恒真/恒假，无判别力）
 	for _, forbidden := range plan.Contract.ForbiddenMoves {
-		if strings.Contains(planText, forbidden) || strings.Contains(forbidden, planText) {
+		if forbidden == "" {
+			continue // 空条目是任意字符串的子串，必误报
+		}
+		if strings.Contains(planText, forbidden) {
 			warnings = append(warnings, PlanWarning{
 				Rule:     "contract_violation",
 				Message:  fmt.Sprintf("计划疑似违反合约禁止项：%s", forbidden),

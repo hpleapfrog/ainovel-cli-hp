@@ -95,15 +95,21 @@ func Run(cfg bootstrap.Config, bundle assets.Bundle, opts Options) error {
 }
 
 func consume(eng *host.Host, stdout, stderr io.Writer, roundHasContent bool) error {
+	events := eng.Events()
+	stream := eng.Stream()
+	done := eng.Done()
 	for {
 		select {
-		case ev, ok := <-eng.Events():
+		case ev, ok := <-events:
 			if !ok {
 				return nil
 			}
 			writeEvent(stderr, ev)
-		case delta, ok := <-eng.Stream():
+		case delta, ok := <-stream:
 			if !ok {
+				// 已关闭 channel 的 receive 立即返回，置 nil 让 select 禁用该分支，
+				// 否则 Events/Done 不就绪时会忙轮询。
+				stream = nil
 				continue
 			}
 			if delta == host.StreamClearSentinel {
@@ -122,7 +128,7 @@ func consume(eng *host.Host, stdout, stderr io.Writer, roundHasContent bool) err
 				return err
 			}
 			roundHasContent = true
-		case _, ok := <-eng.Done():
+		case _, ok := <-done:
 			if !ok {
 				return nil
 			}
@@ -132,14 +138,20 @@ func consume(eng *host.Host, stdout, stderr io.Writer, roundHasContent bool) err
 }
 
 func drainPending(eng *host.Host, stdout, stderr io.Writer, roundHasContent bool) error {
+	events := eng.Events()
+	stream := eng.Stream()
 	for {
 		select {
-		case ev, ok := <-eng.Events():
-			if ok {
-				writeEvent(stderr, ev)
-			}
-		case delta, ok := <-eng.Stream():
+		case ev, ok := <-events:
 			if !ok {
+				// 同上：置 nil 禁用该分支，否则带 default 的 select 永远走不到 default。
+				events = nil
+				continue
+			}
+			writeEvent(stderr, ev)
+		case delta, ok := <-stream:
+			if !ok {
+				stream = nil
 				continue
 			}
 			if delta == host.StreamClearSentinel {

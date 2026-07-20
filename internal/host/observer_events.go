@@ -39,12 +39,14 @@ func (o *observer) handleThinkingProgress(ev agentcore.Event) {
 		return
 	}
 
+	o.mu.Lock()
 	prev := o.lastThinkingByAgent[agent]
 	delta := thinking
 	if strings.HasPrefix(thinking, prev) {
 		delta = thinking[len(prev):]
 	}
 	o.lastThinkingByAgent[agent] = thinking
+	o.mu.Unlock()
 	if delta == "" {
 		return
 	}

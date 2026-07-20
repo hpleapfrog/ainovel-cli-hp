@@ -114,7 +114,8 @@ func TestTimeline_LoadRecent(t *testing.T) {
 	}{
 		{7, 10, 4}, // 全部
 		{7, 3, 2},  // ch5,ch7
-		{5, 2, 3},  // ch3,ch5,ch7
+		{5, 2, 2},  // ch3,ch5；ch7 是未来章，排除
+		{1, 1, 1},  // 仅 ch1；其余均为未来章
 	} {
 		got, _ := s.World.LoadRecentTimeline(tt.current, tt.window)
 		if len(got) != tt.want {

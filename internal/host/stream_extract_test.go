@@ -278,6 +278,32 @@ func TestExtract_UnicodeEscape(t *testing.T) {
 	mustContain(t, out, "中文")
 }
 
+func TestExtract_UnicodeSurrogatePair(t *testing.T) {
+	// 😀 = U+1F600 = 😀（UTF-16 代理对，必须合并为单个 emoji）
+	in := `{"goal":"笑脸😀结束"}`
+	out := feedAll(t, "plan_chapter", in)
+	mustContain(t, out, "笑脸😀结束")
+	mustNotContain(t, out, "�")
+
+	// 代理对跨 chunk 拆开（高低代理落在两次 Feed）结果不变
+	chunked := feedChunked(t, "plan_chapter", in, 1)
+	if chunked != out {
+		t.Errorf("byte-by-byte chunked output differs from whole:\n--- whole ---\n%s\n--- chunked ---\n%s", out, chunked)
+	}
+}
+
+func TestExtract_UnicodeLoneSurrogate(t *testing.T) {
+	// 孤立高代理（后接普通字符 / 字符串结束）与孤立低代理都按现状兜底为 U+FFFD
+	out := feedAll(t, "plan_chapter", `{"goal":"a\uD83Db"}`)
+	mustContain(t, out, "a�b")
+
+	out = feedAll(t, "plan_chapter", `{"goal":"x\uD83D"}`)
+	mustContain(t, out, "x�")
+
+	out = feedAll(t, "plan_chapter", `{"goal":"y\uDE00z"}`)
+	mustContain(t, out, "y�z")
+}
+
 // ── 空容器 / 简单结构 ──
 
 func TestExtract_EmptyArrays(t *testing.T) {

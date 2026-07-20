@@ -2,6 +2,7 @@ package store
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
@@ -158,6 +159,10 @@ func (s *SummaryStore) volumeCount() int {
 	if err == nil && len(volumes) > 0 {
 		return len(volumes)
 	}
+	if err != nil {
+		// 大纲可能损坏但摘要仍在盘上：按 20 上限扫描兜底，但留痕防掩盖数据问题
+		slog.Warn("读取分层大纲失败，卷数量按 20 上限扫描", "module", "store", "err", err)
+	}
 	return 20
 }
 
@@ -169,6 +174,8 @@ func (s *SummaryStore) arcCountForVolume(volume int) int {
 				return len(v.Arcs)
 			}
 		}
+	} else {
+		slog.Warn("读取分层大纲失败，弧数量按 20 上限扫描", "module", "store", "volume", volume, "err", err)
 	}
 	return 20
 }

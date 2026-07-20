@@ -225,3 +225,90 @@ func TestDetectUnreportedCharacters_DedupesCanonicalAcrossSources(t *testing.T) 
 		t.Fatalf("同名应只报一条, got %+v", got)
 	}
 }
+
+// ── checkPlanContinuity：contract_violation 单向判定 ──
+
+func planContinuityStore(t *testing.T) *store.Store {
+	t.Helper()
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := st.Progress.Init("test", 20); err != nil {
+		t.Fatalf("InitProgress: %v", err)
+	}
+	return st
+}
+
+func contractViolations(warnings []PlanWarning) []PlanWarning {
+	var out []PlanWarning
+	for _, w := range warnings {
+		if w.Rule == "contract_violation" {
+			out = append(out, w)
+		}
+	}
+	return out
+}
+
+// 计划文本命中 forbidden_moves 条目 → 提醒；未命中 → 不报。
+// 旧实现是双向包含，planText 为多字段拼接长文，反向包含几乎必中/必不中，判定无效。
+func TestCheckPlanContinuityContractViolation(t *testing.T) {
+	st := planContinuityStore(t)
+
+	hit := checkPlanContinuity(st, domain.ChapterPlan{
+		Chapter: 3,
+		Goal:    "林砚夜探禁地，提前揭露师尊真实身份",
+		Contract: domain.ChapterContract{
+			ForbiddenMoves: []string{"提前揭露师尊真实身份"},
+		},
+	})
+	if got := contractViolations(hit); len(got) != 1 {
+		t.Fatalf("plan 命中禁止项应报 1 条 contract_violation, got %+v", got)
+	}
+
+	miss := checkPlanContinuity(st, domain.ChapterPlan{
+		Chapter: 3,
+		Goal:    "林砚夜探禁地",
+		Contract: domain.ChapterContract{
+			ForbiddenMoves: []string{"提前揭露师尊真实身份"},
+		},
+	})
+	if got := contractViolations(miss); len(got) != 0 {
+		t.Fatalf("plan 未命中禁止项不应报 contract_violation, got %+v", got)
+	}
+}
+
+// 空 forbidden 条目是任意字符串的子串（strings.Contains 恒真），必须跳过，否则必误报。
+func TestCheckPlanContinuitySkipsEmptyForbiddenMove(t *testing.T) {
+	st := planContinuityStore(t)
+	warnings := checkPlanContinuity(st, domain.ChapterPlan{
+		Chapter:  3,
+		Goal:     "林砚夜探禁地",
+		Contract: domain.ChapterContract{ForbiddenMoves: []string{""}},
+	})
+	if got := contractViolations(warnings); len(got) != 0 {
+		t.Fatalf("空 forbidden 条目不应触发 contract_violation, got %+v", got)
+	}
+}
+
+// ── classifyRelation：多关键词文本分类确定 ──
+
+// 关系文本同时含多个等级关键词时，按特异性（|等级| 高者优先）首个命中生效，
+// 且结果与调用次数无关。旧实现遍历 map（迭代顺序随机），同文本多次运行分类会漂移。
+func TestClassifyRelationMultiKeywordDeterministic(t *testing.T) {
+	cases := []struct {
+		rel  string
+		want int
+	}{
+		{"昔日仇人今日盟友", -3}, // 仇人(-3) 与 盟友(2) 并存，高特异性的 -3 优先
+		{"从敌人变成恋人", 3},   // 敌人(-2) 与 恋人(3) 并存，|3| > |-2|
+		{"双方仍是陌生人", 0},   // 0 级关键词命中即返回，不落正/负兜底词
+	}
+	for _, c := range cases {
+		for range 10 {
+			if got := classifyRelation(c.rel); got != c.want {
+				t.Fatalf("classifyRelation(%q) = %d, want %d（多次调用结果须稳定）", c.rel, got, c.want)
+			}
+		}
+	}
+}
