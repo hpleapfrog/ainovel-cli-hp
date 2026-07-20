@@ -123,7 +123,7 @@ func Run(ctx context.Context, deps Deps, opts Options) (<-chan Event, error) {
 				return
 			}
 
-			if err := PersistChapter(ctx, deps.Store, deps.CommitTool, chNum, ch.Title, ch.Content, analysis); err != nil {
+			if err := PersistChapter(ctx, deps.Store, deps.CommitTool, chNum, ch.Content, analysis); err != nil {
 				emit(StageError, chNum, total, fmt.Sprintf("第 %d 章落盘失败", chNum), err)
 				return
 			}

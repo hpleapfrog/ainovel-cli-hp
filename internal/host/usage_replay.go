@@ -39,6 +39,10 @@ type sessionRecordMeta struct {
 //
 // 精度依赖见 sessionRecord 注释的三级降级——第 3 级（Usage 和 _meta 都缺）
 // 在更老日志或上游异常时才会触发。
+//
+// 已知盲区：共创 / 导入 / 仿写三条路径的用量只有 live Record（cocreate.jsonl
+// 无 usage 字段、imp/sim 无 session 日志），崩溃后的 replay 重建不覆盖它们，
+// 这些路径的消耗以 meta/usage.json 的周期落盘为准。
 func (t *UsageTracker) ReplaySessions(rootDir string) (int, error) {
 	if t == nil {
 		return 0, nil

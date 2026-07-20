@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/voocel/agentcore"
@@ -53,6 +54,11 @@ type Host struct {
 	events   chan Event
 	streamCh chan string
 	done     chan struct{}
+
+	// 通道满时静默丢弃（丢最旧再丢新）的累计计数，经 Snapshot 透出到 UI，
+	// 避免高压下事件流/正文流缺内容而毫无信号。
+	droppedEvents atomic.Uint64
+	droppedDeltas atomic.Uint64
 
 	mu         sync.Mutex
 	lifecycle  lifecycle
@@ -816,11 +822,13 @@ func (h *Host) emitEvent(ev Event) {
 	default:
 		select {
 		case <-h.events:
+			h.droppedEvents.Add(1)
 		default:
 		}
 		select {
 		case h.events <- ev:
 		default:
+			h.droppedEvents.Add(1)
 		}
 	}
 }
@@ -832,11 +840,13 @@ func (h *Host) emitDelta(delta string) {
 	default:
 		select {
 		case <-h.streamCh:
+			h.droppedDeltas.Add(1)
 		default:
 		}
 		select {
 		case h.streamCh <- delta:
 		default:
+			h.droppedDeltas.Add(1)
 		}
 	}
 }
@@ -915,6 +925,8 @@ func (h *Host) Snapshot() UISnapshot {
 		CachePerAgent:          cacheStats,
 		CachePerModel:          modelStats,
 		MissingAssistantUsage:  h.usage.MissingAssistantUsage(),
+		DroppedEvents:          h.droppedEvents.Load(),
+		DroppedStreamDeltas:    h.droppedDeltas.Load(),
 	}
 
 	progress, _ := h.store.Progress.Load()
@@ -953,7 +965,6 @@ func (h *Host) Snapshot() UISnapshot {
 	h.fillContextStatus(&snap)
 	snap.StatusLabel = deriveStatusLabel(snap)
 
-	// 恢复标签
 	// 恢复标签
 	if label, err := resumeLabel(h.store); err == nil && label != "" {
 		snap.RecoveryLabel = label
@@ -1488,13 +1499,13 @@ func (h *Host) ReplayQueue(afterSeq int64) ([]domain.RuntimeQueueItem, error) {
 
 // CoCreateStream 冷启动共创：从零澄清需求，产出整本书的创作指令。
 func (h *Host) CoCreateStream(ctx context.Context, history []CoCreateMessage, onProgress func(kind, text string)) (CoCreateReply, error) {
-	return coCreateStream(ctx, h.models, h.store.Sessions, coCreateSystemPrompt, history, onProgress)
+	return coCreateStream(ctx, h.models, h.store.Sessions, h.usage.Record, coCreateSystemPrompt, history, onProgress)
 }
 
 // StageCoCreateStream 阶段共创：在已写内容的基础上规划后续方向。
 // 系统提示 = 阶段 prompt + 当前故事状态摘要，让助手知道"已经写了什么"。
 func (h *Host) StageCoCreateStream(ctx context.Context, history []CoCreateMessage, onProgress func(kind, text string)) (CoCreateReply, error) {
-	return coCreateStream(ctx, h.models, h.store.Sessions, stageSystemPrompt(h.store), history, onProgress)
+	return coCreateStream(ctx, h.models, h.store.Sessions, h.usage.Record, stageSystemPrompt(h.store), history, onProgress)
 }
 
 // stagePlanPrefix 把共创产出的"后续方向 brief"包装成一条阶段规划干预，交 Arbiter 裁定。
@@ -1594,7 +1605,8 @@ func (h *Host) ImportFrom(ctx context.Context, opts imp.Options) (<-chan imp.Eve
 	deps := imp.Deps{
 		Store:      h.store,
 		CommitTool: tools.NewCommitChapterTool(h.store),
-		LLM:        h.models.ForRole("architect"),
+		// 导入的 LLM 消耗以 "import" 身份记账，否则用量面板与预算对导入失明。
+		LLM: newUsageTrackedModelAs(h.models.ForRole("architect"), "import", h.usage.Record),
 		Prompts: imp.Prompts{
 			Foundation: h.bundle.Prompts.ImportFoundation,
 			Analyzer:   h.bundle.Prompts.ImportAnalyzer,
@@ -1615,7 +1627,8 @@ func (h *Host) Simulate(ctx context.Context) (<-chan sim.Event, error) {
 	}
 	deps := sim.Deps{
 		Store: h.store,
-		LLM:   h.models.ForRole("architect"),
+		// 仿写画像的 LLM 消耗以 "simulate" 身份记账，否则用量面板与预算对它失明。
+		LLM: newUsageTrackedModelAs(h.models.ForRole("architect"), "simulate", h.usage.Record),
 		Prompts: sim.Prompts{
 			Source: h.bundle.Prompts.SimulationSource,
 			Merge:  h.bundle.Prompts.SimulationMerge,

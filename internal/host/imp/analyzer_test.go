@@ -120,7 +120,7 @@ func TestPersistChapter_FullPipeline(t *testing.T) {
 	body := "林晚翻开匿名信，发现一行潦草字迹...\n\n（正文略，>500 字以让 LoadChapterContent 通过校验）"
 	body = strings.Repeat(body, 10) // 凑够字数
 
-	if err := PersistChapter(context.Background(), st, commitTool, 1, "初遇", body, a); err != nil {
+	if err := PersistChapter(context.Background(), st, commitTool, 1, body, a); err != nil {
 		t.Fatalf("PersistChapter: %v", err)
 	}
 
@@ -138,7 +138,7 @@ func TestPersistChapter_FullPipeline(t *testing.T) {
 	}
 
 	// 二次提交同一章应是幂等（commit_chapter.IsChapterCompleted 短路）
-	if err := PersistChapter(context.Background(), st, commitTool, 1, "初遇", body, a); err != nil {
+	if err := PersistChapter(context.Background(), st, commitTool, 1, body, a); err != nil {
 		t.Errorf("re-import should be idempotent, got: %v", err)
 	}
 	prog2, _ := st.Progress.Load()

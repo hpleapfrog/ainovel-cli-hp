@@ -176,7 +176,7 @@ func PersistChapter(
 	st *store.Store,
 	commitTool *tools.CommitChapterTool,
 	chapter int,
-	title, content string,
+	content string,
 	a *ChapterAnalysis,
 ) error {
 	if a == nil {
@@ -196,7 +196,7 @@ func PersistChapter(
 		return fmt.Errorf("start chapter ch%d: %w", chapter, err)
 	}
 
-	// 3. 构造 commit_chapter 入参（注入 chapter title 仅记录用，commit_chapter 不读 title）
+	// 3. 构造 commit_chapter 入参
 	args := map[string]any{
 		"chapter":         chapter,
 		"summary":         a.Summary,
@@ -217,7 +217,6 @@ func PersistChapter(
 	if len(a.StateChanges) > 0 {
 		args["state_changes"] = a.StateChanges
 	}
-	_ = title
 
 	raw, err := json.Marshal(args)
 	if err != nil {

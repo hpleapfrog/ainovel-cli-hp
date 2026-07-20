@@ -63,7 +63,7 @@ func Run(ctx context.Context, deps Deps, opts Options) (<-chan Event, error) {
 				return
 			}
 			emit(StageAnalyze, i+1, len(pending), fmt.Sprintf("分析仿写语料 %d/%d：%s", i+1, len(pending), source.RelativePath), nil)
-			report, err := AnalyzeSource(ctx, deps.LLM, deps.Prompts.Source, source)
+			report, err := analyzeSource(ctx, deps.LLM, deps.Prompts.Source, source)
 			if err != nil {
 				emit(StageError, i+1, len(pending), "语料分析失败", err)
 				return
@@ -88,7 +88,7 @@ func Run(ctx context.Context, deps Deps, opts Options) (<-chan Event, error) {
 	return events, nil
 }
 
-func AnalyzeSource(ctx context.Context, llm LLMChat, systemPrompt string, source scannedSource) (*domain.SimulationSourceReport, error) {
+func analyzeSource(ctx context.Context, llm LLMChat, systemPrompt string, source scannedSource) (*domain.SimulationSourceReport, error) {
 	if strings.TrimSpace(systemPrompt) == "" {
 		return nil, fmt.Errorf("source prompt is required")
 	}

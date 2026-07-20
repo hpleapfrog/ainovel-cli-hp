@@ -62,6 +62,10 @@ func renderStateContent(snap host.UISnapshot, contentW int) string {
 		}
 		overview.WriteString(renderHighlightField(label, truncate(headline, contentW-10)))
 	}
+	// 通道丢弃 > 0 说明高压下 UI 缺过内容，显式提示避免误判为 agent 行为缺失
+	if snap.DroppedEvents > 0 || snap.DroppedStreamDeltas > 0 {
+		overview.WriteString(renderField("通道丢弃", fmt.Sprintf("事件 %d · 流式 %d", snap.DroppedEvents, snap.DroppedStreamDeltas)))
+	}
 	sections = append(sections, renderSidebarSection("概览", overview.String(), contentW))
 
 	if len(agents) > 0 {
@@ -465,7 +469,7 @@ func renderCacheSidebar(snap host.UISnapshot, width int) string {
 			Render(strings.Repeat("·", max(8, width-12))))
 		b.WriteString("\n")
 		for _, a := range roles {
-			b.WriteString(renderCacheAgentLine(a, width))
+			b.WriteString(renderCacheAgentLine(a))
 			b.WriteString("\n")
 		}
 	}
@@ -491,7 +495,7 @@ func colorPercent(p float64) string {
 //	未启用     "WRITER        未启用"
 //	已启用     "WRITER        85%  · 323k / 394k"
 //	无 cache  显式"未启用"，不混进 0/0 干扰判读
-func renderCacheAgentLine(a host.AgentCacheStat, width int) string {
+func renderCacheAgentLine(a host.AgentCacheStat) string {
 	// role 名与"运行角色"区保持完全一致；Width 取 12 让最长的 ARCHITECT
 	// 仍能保留 1 列尾随空格做分隔，其它 role 自动右侧填充。
 	roleStyle := lipgloss.NewStyle().Foreground(eventAgentColor(a.Role)).Width(12)
@@ -499,7 +503,6 @@ func renderCacheAgentLine(a host.AgentCacheStat, width int) string {
 
 	if !a.CacheCapable {
 		dim := lipgloss.NewStyle().Foreground(colorDim).Italic(true)
-		_ = width
 		return role + dim.Render("未启用")
 	}
 
@@ -516,7 +519,6 @@ func renderCacheAgentLine(a host.AgentCacheStat, width int) string {
 	// "看出规模"才是这一列的主诉求；百分比单独提供稳态信号即可。
 	tokens := lipgloss.NewStyle().Foreground(colorDim).Render(
 		" · " + formatTokensCompact(a.CacheRead) + " / " + formatTokensCompact(a.Input))
-	_ = width
 	return role + pctCell + tokens
 }
 

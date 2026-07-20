@@ -96,6 +96,11 @@ type UISnapshot struct {
 	// 不要让用户误以为是缓存模块本身坏了。
 	MissingAssistantUsage int
 
+	// 发射通道（events/stream）满时被静默丢弃的累计计数。
+	// > 0 说明 UI 事件流/正文流在高压下缺过内容，并非 agent 行为缺失。
+	DroppedEvents       uint64
+	DroppedStreamDeltas uint64
+
 	// 缓存 per-role 维度，按 CacheRead 降序，已过滤未消费 token 的 role
 	CachePerAgent []AgentCacheStat
 	CachePerModel []AgentCacheStat

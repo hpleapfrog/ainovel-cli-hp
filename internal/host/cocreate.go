@@ -83,7 +83,9 @@ const (
 	tagSuggestions = "suggestions"
 )
 
-func coCreateStream(ctx context.Context, models *bootstrap.ModelSet, sessions *store.SessionStore, sysPrompt string, history []CoCreateMessage, onProgress func(kind, text string)) (reply CoCreateReply, err error) {
+// coCreateStream 跑一轮共创对话。record 非 nil 时把本次 LLM 消耗记入 UsageTracker
+// （身份 "cocreate"）——共创不进 Engine/session 日志，不在这里记账预算就对它失明。
+func coCreateStream(ctx context.Context, models *bootstrap.ModelSet, sessions *store.SessionStore, record func(string, string, agentcore.AgentMessage), sysPrompt string, history []CoCreateMessage, onProgress func(kind, text string)) (reply CoCreateReply, err error) {
 	if len(history) == 0 {
 		return CoCreateReply{}, fmt.Errorf("cocreate history is empty")
 	}
@@ -150,6 +152,11 @@ func coCreateStream(ctx context.Context, models *bootstrap.ModelSet, sessions *s
 				onProgress(CoCreateProgressReply, extractReplyPreview(raw.String()))
 			}
 		case agentcore.StreamEventDone:
+			// 流结束时的最终消息携带 Usage，据它记账；无 Usage 则无量可计
+			// （与 usageTrackedModel 同一口径，不触发 missingAssistantUsage 诊断）。
+			if record != nil && ev.Message.Usage != nil {
+				record("cocreate", "", ev.Message)
+			}
 			if !streamed {
 				raw.WriteString(ev.Message.TextContent())
 			}
