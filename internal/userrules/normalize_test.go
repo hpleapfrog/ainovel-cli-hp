@@ -3,6 +3,7 @@ package userrules
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -234,5 +235,57 @@ func TestNormalize_POVPersonElevated(t *testing.T) {
 	}
 	if cand.Structured.POVPerson != "third" {
 		t.Fatalf("应提升 pov_person=third，got %+v", cand.Structured)
+	}
+}
+
+// thinkingRejectModel 模拟"能力未知但 provider 拒收 thinking 参数"的自建代理：
+// 带 thinking 参数的请求一律 400，不带参数才正常返回。
+type thinkingRejectModel struct {
+	calls    int
+	lastCfg  agentcore.CallConfig
+	lastMsgs []agentcore.Message
+}
+
+func (m *thinkingRejectModel) Generate(_ context.Context, messages []agentcore.Message, _ []agentcore.ToolSpec, opts ...agentcore.CallOption) (*agentcore.LLMResponse, error) {
+	var cfg agentcore.CallConfig
+	for _, o := range opts {
+		o(&cfg)
+	}
+	m.lastCfg = cfg
+	m.lastMsgs = messages
+	m.calls++
+	if cfg.ThinkingLevel != "" {
+		return nil, errors.New("openai: thinking is only supported for reasoning chat models")
+	}
+	return &agentcore.LLMResponse{Message: agentcore.Message{
+		Role:    agentcore.RoleAssistant,
+		Content: []agentcore.ContentBlock{agentcore.TextBlock(`{"structured":{},"preferences":"简洁","uncertain":[]}`)},
+	}}, nil
+}
+
+func (m *thinkingRejectModel) GenerateStream(context.Context, []agentcore.Message, []agentcore.ToolSpec, ...agentcore.CallOption) (<-chan agentcore.StreamEvent, error) {
+	return nil, nil
+}
+
+func (m *thinkingRejectModel) SupportsTools() bool { return false }
+
+// provider 拒收 thinking 参数时：降级为不传参数重试并成功，
+// 不降级、不消耗全部尝试（此前同一错误会盲重试 3 次后整本 degraded）。
+func TestNormalize_ThinkingRejectedFallsBackToNoParam(t *testing.T) {
+	model := &thinkingRejectModel{}
+	n := NewNormalizer(model)
+
+	cand := n.Normalize(t.Context(), "startup_prompt", "文风简洁")
+	if cand.Degraded {
+		t.Fatalf("应降级重试后成功，不应 degraded: %+v", cand)
+	}
+	if cand.Preferences != "简洁" {
+		t.Fatalf("preferences 解析不符: %q", cand.Preferences)
+	}
+	if model.calls != 2 {
+		t.Fatalf("应恰好 2 次调用（1 次被拒 + 1 次成功），got %d", model.calls)
+	}
+	if model.lastCfg.ThinkingLevel != "" {
+		t.Fatalf("重试应不带 thinking 参数，got %q", model.lastCfg.ThinkingLevel)
 	}
 }

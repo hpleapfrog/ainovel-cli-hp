@@ -15,7 +15,7 @@ import (
 	"strings"
 
 	"github.com/voocel/agentcore"
-	"github.com/voocel/agentcore/llm"
+	"github.com/voocel/ainovel-cli/internal/llmutil"
 	"github.com/voocel/ainovel-cli/internal/rules"
 )
 
@@ -38,12 +38,12 @@ type Normalizer struct {
 // 应传入能力较强的模型（如 ModelSet 的默认模型），不必跟随写作的弱模型。
 //
 // 归一化是机械抽取、不需要推理：能关思考就关（腾出 max_tokens 给 JSON、省 latency 与成本）。
-// 用模型自身的思考策略 Resolve(off)——支持关闭就关，不支持（o 系等总在思考的模型）则回落
-// ThinkingAuto（provider 默认），由 normalizeMaxTokens 的思考预算兜底避免截断。
+// SafeThinkingLevel 按模型上报的能力收敛——明确不支持 thinking 的模型不传该参数；
+// 能力未知的模型先按 Resolve 结果发，若 provider 拒收（见 Normalize 的降级重试）再放弃。
 func NewNormalizer(model agentcore.ChatModel) *Normalizer {
 	thinking := agentcore.ThinkingAuto
 	if model != nil {
-		thinking, _ = llm.ThinkingPolicyFor(model).Resolve(agentcore.ThinkingOff)
+		thinking = llmutil.SafeThinkingLevel(model, agentcore.ThinkingOff)
 	}
 	return &Normalizer{model: model, thinking: thinking}
 }
@@ -66,12 +66,24 @@ func (n *Normalizer) Normalize(ctx context.Context, source, text string) rules.C
 
 	// 有限重试后降级：技术错误（网络/模型/非法 JSON）进日志、不进快照，
 	// 快照只留 status=degraded + 来源标注（见设计 §失败与降级 / §回显）。
+	//
+	// thinking 是本调用的局部值：能力未知的模型（自建代理常见）NewNormalizer
+	// 阶段无法预判 provider 会拒收 thinking 参数，首个请求被拒后立即降级为
+	// 不传参数重试，而不是用同一种必败的请求形态消耗完全部尝试。
+	thinking := n.thinking
 	var lastErr string
 	for attempt := 1; attempt <= normalizeMaxAttempts; attempt++ {
-		resp, err := n.model.Generate(ctx, messages, nil,
-			agentcore.WithThinking(n.thinking),
-			agentcore.WithMaxTokens(normalizeMaxTokens))
+		opts := []agentcore.CallOption{agentcore.WithMaxTokens(normalizeMaxTokens)}
+		if thinking != "" {
+			opts = append(opts, agentcore.WithThinking(thinking))
+		}
+		resp, err := n.model.Generate(ctx, messages, nil, opts...)
 		switch {
+		case err != nil && thinking != "" && isThinkingParamRejected(err):
+			slog.Warn("provider 拒收 thinking 参数，改为不传参数重试",
+				"module", "rules", "source", source, "err", err.Error())
+			thinking = ""
+			continue
 		case err != nil:
 			lastErr = err.Error()
 		case resp == nil:
@@ -113,6 +125,19 @@ func degraded(source, text string) rules.Candidate {
 		Uncertain:   []string{source + "：归一化失败，已按原文作为风格偏好处理（未提炼机械规则）"},
 		Degraded:    true,
 	}
+}
+
+// isThinkingParamRejected 识别 provider 明确拒收 thinking 参数的错误
+// （如 "openai: thinking is only supported for reasoning chat models"）。
+// agentcore 对这类 400 没有类型化分类，只能按消息特征匹配——收窄到
+// "thinking + not/only supported" 组合，避免误吞其他可重试错误。
+func isThinkingParamRejected(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "thinking") &&
+		(strings.Contains(msg, "not supported") || strings.Contains(msg, "only supported"))
 }
 
 // normalizerOutput 是归一化器约定的 JSON 形态。
