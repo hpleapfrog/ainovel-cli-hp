@@ -101,6 +101,10 @@ type UISnapshot struct {
 	DroppedEvents       uint64
 	DroppedStreamDeltas uint64
 
+	// MissingPricing 是"记账时无法解析价格"的模型键列表（注册表未收录且
+	// provider 未自报 cost）：token 照记，但成本/预算对这些模型失明。
+	MissingPricing []string
+
 	// 缓存 per-role 维度，按 CacheRead 降序，已过滤未消费 token 的 role
 	CachePerAgent []AgentCacheStat
 	CachePerModel []AgentCacheStat

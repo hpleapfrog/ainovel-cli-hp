@@ -514,3 +514,35 @@ func TestCacheBreakDetection(t *testing.T) {
 		t.Fatalf("断裂计数应进快照：overall=%d writer=%d", snap.Overall.CacheBreaks, snap.PerAgent["writer"].CacheBreaks)
 	}
 }
+
+// Test_UsageTracker_MissingPricing 价格缺失追踪：注册表未收录且 provider 未自报 cost
+// 的模型进入 MissingPricing；provider 自报 cost、注册表带价（含明确免费）都不算缺失；
+// 注册表后续补到价格后自动从列表消失。
+func Test_UsageTracker_MissingPricing(t *testing.T) {
+	tk := NewUsageTracker(nil, nil)
+
+	record := func(provider, model string, cost *agentcore.Cost) {
+		tk.Record("writer", "", agentcore.Message{
+			Role:  agentcore.RoleAssistant,
+			Usage: &agentcore.Usage{Input: 100, Output: 10, Provider: provider, Model: model, Cost: cost},
+		})
+	}
+
+	// 未收录 + 无自报 cost → 缺失
+	record("openai", "no-such-model-xyz", nil)
+	// 未收录但 provider 自报 cost → 不算缺失
+	record("openai", "self-reporting-model", &agentcore.Cost{Total: 0.01})
+
+	missing := tk.MissingPricing()
+	if len(missing) != 1 || missing[0] != "openai/no-such-model-xyz" {
+		t.Fatalf("MissingPricing = %v, want [openai/no-such-model-xyz]", missing)
+	}
+
+	// 注册表补到价格（含明确免费）→ 自动消失
+	models.DefaultRegistry().MergeModels([]models.ModelEntry{
+		{Provider: "openai", ID: "no-such-model-xyz", HasPricing: true},
+	})
+	if got := tk.MissingPricing(); len(got) != 0 {
+		t.Fatalf("priced after registry refresh, MissingPricing = %v, want empty", got)
+	}
+}

@@ -305,6 +305,19 @@ func renderUsageSidebar(snap host.UISnapshot, width int) string {
 		return ""
 	}
 	var b strings.Builder
+	// 价格缺失的模型：token 照记但成本/预算不含它们，费用数字会系统性偏低，
+	// 必须显式提示，否则用户会误以为本书很便宜、预算熔断也在静默失效。
+	if len(snap.MissingPricing) > 0 {
+		names := make([]string, len(snap.MissingPricing))
+		for i, key := range snap.MissingPricing {
+			names[i] = modelDisplayName(key)
+		}
+		warn := lipgloss.NewStyle().Foreground(colorError).Bold(true).
+			Render(fmt.Sprintf("⚠ 价格缺失：%d 个模型", len(names)))
+		hint := lipgloss.NewStyle().Foreground(colorDim).Italic(true).
+			Render(truncate(strings.Join(names, "、")+" 不计入成本/预算", max(8, width-2)))
+		b.WriteString(warn + "\n" + hint + "\n")
+	}
 	b.WriteString(renderField("输入", formatTokensCompact(snap.TotalInputTokens)))
 	b.WriteString(renderField("输出", formatTokensCompact(snap.TotalOutputTokens)))
 	if cost := formatCostUSD(snap.TotalCostUSD); cost != "" {

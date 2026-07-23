@@ -927,6 +927,7 @@ func (h *Host) Snapshot() UISnapshot {
 		MissingAssistantUsage:  h.usage.MissingAssistantUsage(),
 		DroppedEvents:          h.droppedEvents.Load(),
 		DroppedStreamDeltas:    h.droppedDeltas.Load(),
+		MissingPricing:         h.usage.MissingPricing(),
 	}
 
 	progress, _ := h.store.Progress.Load()

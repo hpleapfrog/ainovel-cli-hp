@@ -64,6 +64,11 @@ type UsageTracker struct {
 	missingAssistantUsage int
 	loggedMissingUsage    bool // 整个会话只 warn 一次，避免 tui.log 被刷屏
 
+	// unpricedModels 记录"记账时无法解析价格"的模型键及出现次数（注册表未收录
+	// 且 provider 未自报 cost）：token 照记，但成本与预算对这些模型失明。
+	// 首次见到 warn 一次；经 MissingPricing 透出到 UI。
+	unpricedModels map[string]int
+
 	// saveCh 由 Record 在累加后非阻塞触发；autoSaveLoop 监听并按 debounce 落盘。
 	// buffered=1：连续多次 Record 折叠为一次落盘信号；满了直接丢，下个 tick 一并写。
 	saveCh chan struct{}
@@ -115,12 +120,13 @@ type agentTotals struct {
 
 func NewUsageTracker(set *bootstrap.ModelSet, store *storepkg.Store) *UsageTracker {
 	return &UsageTracker{
-		modelSet:   set,
-		store:      store,
-		perAgent:   make(map[string]*agentTotals, 4),
-		perModel:   make(map[string]*agentTotals, 4),
-		cacheTrack: make(map[string]*cacheTrackState, 4),
-		saveCh:     make(chan struct{}, 1),
+		modelSet:       set,
+		store:          store,
+		perAgent:       make(map[string]*agentTotals, 4),
+		perModel:       make(map[string]*agentTotals, 4),
+		cacheTrack:     make(map[string]*cacheTrackState, 4),
+		unpricedModels: make(map[string]int, 2),
+		saveCh:         make(chan struct{}, 1),
 	}
 }
 
@@ -255,8 +261,9 @@ func (t *UsageTracker) notifyDirty() {
 // resolveCost 在锁外执行（它只读 modelSet/Registry），锁内只做加法。
 func (t *UsageTracker) accumulate(role, provider, modelName string, u agentcore.Usage) {
 	provider, modelName = t.effectiveModel(role, provider, modelName)
-	cost, saved, capable := t.resolveCost(modelName, u)
+	cost, saved, capable, priced := t.resolveCost(modelName, u)
 
+	var firstUnpriced string
 	t.mu.Lock()
 	addUsage(&t.overall, u, cost, saved, capable)
 
@@ -274,10 +281,20 @@ func (t *UsageTracker) accumulate(role, provider, modelName string, u agentcore.
 			t.perModel[key] = perModel
 		}
 		addUsage(perModel, u, cost, saved, capable)
+		if !priced {
+			if _, seen := t.unpricedModels[key]; !seen {
+				firstUnpriced = key
+			}
+			t.unpricedModels[key]++
+		}
 	}
 	total := t.overall.Cost
 	t.mu.Unlock()
 
+	if firstUnpriced != "" {
+		slog.Warn("模型价格未收录，该模型消耗不计入成本与预算",
+			"module", "usage", "model", firstUnpriced)
+	}
 	t.notifyDirty()
 	if t.onCost != nil {
 		t.onCost(total)
@@ -420,6 +437,32 @@ func (t *UsageTracker) OverallCacheCapable() bool {
 // MissingAssistantUsage 返回累计"收到 assistant 消息但 Usage 为 nil"的次数。
 // 大于 0 通常意味着上游 streaming 没发 OpenAI 的 final usage chunk，
 // UI 据此显示提示而非误以为缓存模块本身坏了。
+// MissingPricing 返回"记账时无法解析价格"的模型键，按字典序。
+// 这些模型的 token 照常累计，但成本与预算对它们失明——UI 据此提示价格数据缺口，
+// 而不是让预算熔断静默失效。注册表后台刷新补到价格后，对应键自动消失（按查询时点重判）。
+func (t *UsageTracker) MissingPricing() []string {
+	if t == nil {
+		return nil
+	}
+	t.mu.Lock()
+	keys := make([]string, 0, len(t.unpricedModels))
+	for key := range t.unpricedModels {
+		keys = append(keys, key)
+	}
+	t.mu.Unlock()
+
+	out := keys[:0]
+	for _, key := range keys {
+		if entry, ok := models.DefaultRegistry().Resolve(key); ok &&
+			(entry.HasPricing || entry.InputCostPer1M > 0 || entry.OutputCostPer1M > 0) {
+			continue // 注册表已补到价格
+		}
+		out = append(out, key)
+	}
+	sort.Strings(out)
+	return out
+}
+
 func (t *UsageTracker) MissingAssistantUsage() int {
 	if t == nil {
 		return 0
@@ -685,19 +728,24 @@ func (t *UsageTracker) PerModel() []AgentUsage {
 //   - capable: 注册表命中且该模型 CacheReadCostPer1M > 0 → 已知支持 prompt caching
 //
 // modelName 优先用调用方传入的（replay 时来自 session jsonl 的 _meta.model）。
-func (t *UsageTracker) resolveCost(modelName string, u agentcore.Usage) (cost, saved float64, capable bool) {
+func (t *UsageTracker) resolveCost(modelName string, u agentcore.Usage) (cost, saved float64, capable, priced bool) {
 	if entry, ok := models.DefaultRegistry().Resolve(modelName); ok {
 		c := computeCost(u, *entry)
 		s := computeSaved(u, *entry)
 		canCache := entry.CacheReadCostPer1M > 0
 		if c > 0 {
-			return c, s, canCache
+			return c, s, canCache, true
+		}
+		// 命中但本次算价为 0：条目带价格信息（非零价，或 HasPricing 标明的明确免费）
+		// 就算价格已知；只有"注册表没有价格数据"才算缺失。
+		if entry.HasPricing || entry.InputCostPer1M > 0 || entry.OutputCostPer1M > 0 {
+			priced = true
 		}
 	}
 	if u.Cost != nil {
-		return u.Cost.Total, 0, false
+		return u.Cost.Total, 0, false, priced || u.Cost.Total > 0
 	}
-	return 0, 0, false
+	return 0, 0, false, priced
 }
 
 // agentRoleName 把 subagent 名字归一到 role 名。
