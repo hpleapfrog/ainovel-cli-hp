@@ -76,13 +76,13 @@ func (t *CommitChapterTool) Schema() map[string]any {
 	return schema.Object(
 		schema.Property("chapter", schema.Int("章节号")).Required(),
 		schema.Property("summary", schema.String("本章内容摘要（200字以内）")).Required(),
-		schema.Property("characters", schema.Array("本章出场角色名", schema.String(""))).Required(),
-		schema.Property("key_events", schema.Array("本章关键事件", schema.String(""))).Required(),
-		schema.Property("timeline_events", schema.Array("本章时间线事件", timelineSchema)),
-		schema.Property("foreshadow_updates", schema.Array("伏笔操作", foreshadowSchema)),
-		schema.Property("relationship_changes", schema.Array("关系变化", relationshipSchema)),
-		schema.Property("state_changes", schema.Array("角色/实体状态变化", stateChangeSchema)),
-		schema.Property("cast_intros", schema.Array("本章首次引入且后续可能再出现的次要角色简介（不含主角及 characters.json 已有角色）", schema.Object(
+		schema.Property("characters", schema.Array("本章出场角色名；直接传数组，不要传字符串化 JSON", schema.String(""))).Required(),
+		schema.Property("key_events", schema.Array("本章关键事件；直接传数组，不要传字符串化 JSON", schema.String(""))).Required(),
+		schema.Property("timeline_events", schema.Array("本章时间线事件；直接传数组，不要传字符串化 JSON", timelineSchema)),
+		schema.Property("foreshadow_updates", schema.Array("伏笔操作；直接传数组，不要传字符串化 JSON", foreshadowSchema)),
+		schema.Property("relationship_changes", schema.Array("关系变化；直接传数组，不要传字符串化 JSON", relationshipSchema)),
+		schema.Property("state_changes", schema.Array("角色/实体状态变化；直接传数组，不要传字符串化 JSON", stateChangeSchema)),
+		schema.Property("cast_intros", schema.Array("本章首次引入且后续可能再出现的次要角色简介（不含主角及 characters.json 已有角色）；直接传数组，不要传字符串化 JSON", schema.Object(
 			schema.Property("name", schema.String("角色名")).Required(),
 			schema.Property("brief_role", schema.String("一句话定位（如：客栈老板/赌坊打手）")).Required(),
 		))),
