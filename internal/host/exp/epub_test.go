@@ -231,10 +231,11 @@ func TestSplitParagraphs(t *testing.T) {
 		want []string
 	}{
 		{"a\n\nb", []string{"a", "b"}},
-		{"a\n\n\n\nb", []string{"a", "b"}}, // 多空行折叠为一个分隔
-		{"a\nb", []string{"a b"}},          // 段内单换行变空格
-		{"  ", nil},                        // 全空白返回 nil
-		{"a\r\n\r\nb", []string{"a", "b"}}, // CRLF 兼容
+		{"a\n\n\n\nb", []string{"a", "b"}},  // 多空行折叠为一个分隔
+		{"a\nb", []string{"a", "b"}},        // 无空行 = 紧凑排版，逐行成段
+		{"a\n\nb\nc", []string{"a", "b c"}}, // 有空行时段内单换行变空格
+		{"  ", nil},                         // 全空白返回 nil
+		{"a\r\n\r\nb", []string{"a", "b"}},  // CRLF 兼容
 	}
 	for _, c := range cases {
 		got := splitParagraphs(c.in)

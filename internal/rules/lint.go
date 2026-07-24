@@ -141,9 +141,9 @@ const paragraphEnders = "。！？”’」』…：；】—）"
 // 等合法排版，成规模才说明模型在拦腰折断长段。
 const paragraphBreakMinReports = 3
 
-// IsStructuralLine 识别非散文的结构行（系统工单/楼层图/标签-值条目），
-// 这类条目行天然不以句读收尾：lint 据此不计段中换行，commit 格式化据此保持同组。
-func IsStructuralLine(s string) bool {
+// isStructuralLine 识别非散文的结构行（系统工单/楼层图/标签-值条目），
+// 这类条目行天然不以句读收尾，不应计入段中换行。
+func isStructuralLine(s string) bool {
 	if strings.HasPrefix(s, "【") || strings.HasSuffix(s, "】") {
 		return true
 	}
@@ -170,7 +170,7 @@ func appendParagraphBreaks(vs []Violation, text string) []Violation {
 		if s == "" || strings.HasPrefix(s, "#") || strings.TrimSpace(lines[i+1]) == "" {
 			continue
 		}
-		if IsStructuralLine(s) {
+		if isStructuralLine(s) {
 			continue
 		}
 		r, _ := utf8.DecodeLastRuneInString(s)

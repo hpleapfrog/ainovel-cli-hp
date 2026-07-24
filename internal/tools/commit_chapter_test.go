@@ -913,7 +913,7 @@ func commitFormatChapter(t *testing.T, s *store.Store, chapter int) {
 	}
 }
 
-// 无章首标题 + 单换行紧凑排版 → 补「# 第N章 大纲标题」，段落间强制空行，多个空行收敛。
+// 无章首标题 → 补「# 第N章 大纲标题」；段间空行与连续空行一律移除（段间不留空行）。
 func TestCommitChapter_NormalizesFormat(t *testing.T) {
 	s := setupFormatBook(t)
 	if err := s.Drafts.SaveDraft(1, "第一段。\n第二段。\n\n\n第三段。"); err != nil {
@@ -925,7 +925,7 @@ func TestCommitChapter_NormalizesFormat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadChapterText: %v", err)
 	}
-	want := "# 第1章 雨夜\n\n第一段。\n\n第二段。\n\n第三段。\n"
+	want := "# 第1章 雨夜\n第一段。\n第二段。\n第三段。\n"
 	if final != want {
 		t.Fatalf("final = %q, want %q", final, want)
 	}
@@ -940,18 +940,18 @@ func TestCommitChapter_PreservesExistingHeading(t *testing.T) {
 	commitFormatChapter(t, s, 1)
 
 	final, _ := s.Drafts.LoadChapterText(1)
-	want := "# 第一章 自定义标题\n\n正文第一段。\n"
+	want := "# 第一章 自定义标题\n正文第一段。\n"
 	if final != want {
 		t.Fatalf("final = %q, want %q", final, want)
 	}
 }
 
-// 连续结构行（系统工单/标签-值条目）保持同组不拆，前后散文行独立成段。
-func TestNormalizeChapterFormat_KeepsStructuralBlock(t *testing.T) {
+// 紧凑排版：结构行与散文行一样只留文字，空行一律移除。
+func TestNormalizeChapterFormat_RemovesAllBlankLines(t *testing.T) {
 	s := setupFormatBook(t)
-	in := "# 第一章 雨夜\n【工单 CN-1】\n类型：回滚\n地址：棠溪村\n他抬头。"
+	in := "# 第一章 雨夜\n\n【工单 CN-1】\n类型：回滚\n\n地址：棠溪村\n\n\n他抬头。"
 	got := normalizeChapterFormat(s, 1, in)
-	want := "# 第一章 雨夜\n\n【工单 CN-1】\n类型：回滚\n地址：棠溪村\n\n他抬头。\n"
+	want := "# 第一章 雨夜\n【工单 CN-1】\n类型：回滚\n地址：棠溪村\n他抬头。\n"
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}

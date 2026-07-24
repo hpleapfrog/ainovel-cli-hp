@@ -149,11 +149,16 @@ func renderChapterXHTML(ch int, title string, loc chapterLocation, hasLoc bool, 
 	return b.String()
 }
 
-// splitParagraphs 按空行切段；连续多空行视为一个分段。返回的段落都已 TrimSpace 且非空。
-// 段内换行（单个 \n）保留为段内空格——XHTML 的 <p> 不保留换行，浏览器自动 wrap。
+// splitParagraphs 切段：有分段空行时按空行切（段内单换行变空格）；
+// 无空行时按紧凑排版处理（一段一行，commit 落盘标准），逐行成段。
+// 返回的段落都已 TrimSpace 且非空。
 func splitParagraphs(body string) []string {
 	body = strings.ReplaceAll(body, "\r\n", "\n")
-	parts := strings.Split(body, "\n\n")
+	sep := "\n\n"
+	if !strings.Contains(body, "\n\n") {
+		sep = "\n"
+	}
+	parts := strings.Split(body, sep)
 	out := make([]string, 0, len(parts))
 	for _, p := range parts {
 		p = strings.TrimSpace(p)

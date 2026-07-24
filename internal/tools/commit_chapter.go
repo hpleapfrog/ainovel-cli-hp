@@ -418,9 +418,8 @@ func (t *CommitChapterTool) checkRules(text string) []rules.Violation {
 // 这些已在章节原始提交时应用。
 // normalizeChapterFormat 落盘终稿前的确定性格式化（只动排版，不动文字）：
 //  1. 章首保证「# 第N章 …」标题——模型省略时按大纲标题补齐，已写标题的原样保留；
-//  2. 段落之间保证一个空行——模型常输出"一段一行、行间无空行"的紧凑形态，
-//     EPUB 导出按空行切段会把整章粘成一段；连续结构行（系统工单等，rules.IsStructuralLine）
-//     保持同组，多个连续空行收敛为一个。幂等：重排已归一文本结果不变。
+//  2. 段间不留空行：全部非空行以单个换行相连（本书排版约定：一段一行），
+//     段间空行与连续空行一律移除。幂等：重排已归一文本结果不变。
 func normalizeChapterFormat(st *store.Store, chapter int, content string) string {
 	lines := strings.Split(strings.TrimLeft(content, "\n"), "\n")
 
@@ -439,32 +438,13 @@ func normalizeChapterFormat(st *store.Store, chapter int, content string) string
 		lines = append([]string{header}, lines...)
 	}
 
-	var groups []string
-	var cur []string
-	flush := func() {
-		if len(cur) > 0 {
-			groups = append(groups, strings.Join(cur, "\n"))
-			cur = nil
-		}
-	}
+	out := make([]string, 0, len(lines))
 	for _, line := range lines {
-		t := strings.TrimSpace(line)
-		if t == "" {
-			flush()
-			continue
-		}
-		if len(cur) > 0 && rules.IsStructuralLine(t) && rules.IsStructuralLine(cur[len(cur)-1]) {
-			cur = append(cur, t)
-			continue
-		}
-		flush()
-		cur = []string{t}
-		if !rules.IsStructuralLine(t) {
-			flush()
+		if t := strings.TrimSpace(line); t != "" {
+			out = append(out, t)
 		}
 	}
-	flush()
-	return strings.Join(groups, "\n\n") + "\n"
+	return strings.Join(out, "\n") + "\n"
 }
 
 // chapterOutlineTitle 取本章大纲标题（扁平优先，分层回落），取不到返回空。
