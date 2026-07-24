@@ -168,6 +168,9 @@ func (t *CommitChapterTool) Execute(_ context.Context, args json.RawMessage) (js
 	if content == "" {
 		return nil, fmt.Errorf("no content found for chapter %d: %w", a.Chapter, errs.ErrToolPrecondition)
 	}
+	// 格式归一：保证章首标题与段间空行（详见 normalizeChapterFormat）
+	content = normalizeChapterFormat(t.store, a.Chapter, content)
+	wordCount = domain.WordCount(content)
 
 	now := time.Now().Format(time.RFC3339)
 	pending := domain.PendingCommit{
@@ -413,6 +416,68 @@ func (t *CommitChapterTool) checkRules(text string) []rules.Violation {
 // executeRewriteCommit 处理打磨/重写章节的提交：覆盖终稿与摘要、更新字数、drain 队列。
 // 跳过所有世界状态追加（timeline / foreshadow / relationship / state_changes）与弧边界检测，
 // 这些已在章节原始提交时应用。
+// normalizeChapterFormat 落盘终稿前的确定性格式化（只动排版，不动文字）：
+//  1. 章首保证「# 第N章 …」标题——模型省略时按大纲标题补齐，已写标题的原样保留；
+//  2. 段落之间保证一个空行——模型常输出"一段一行、行间无空行"的紧凑形态，
+//     EPUB 导出按空行切段会把整章粘成一段；连续结构行（系统工单等，rules.IsStructuralLine）
+//     保持同组，多个连续空行收敛为一个。幂等：重排已归一文本结果不变。
+func normalizeChapterFormat(st *store.Store, chapter int, content string) string {
+	lines := strings.Split(strings.TrimLeft(content, "\n"), "\n")
+
+	first := ""
+	for _, l := range lines {
+		if t := strings.TrimSpace(l); t != "" {
+			first = t
+			break
+		}
+	}
+	if !strings.HasPrefix(first, "#") {
+		header := fmt.Sprintf("# 第%d章", chapter)
+		if title := chapterOutlineTitle(st, chapter); title != "" {
+			header += " " + title
+		}
+		lines = append([]string{header}, lines...)
+	}
+
+	var groups []string
+	var cur []string
+	flush := func() {
+		if len(cur) > 0 {
+			groups = append(groups, strings.Join(cur, "\n"))
+			cur = nil
+		}
+	}
+	for _, line := range lines {
+		t := strings.TrimSpace(line)
+		if t == "" {
+			flush()
+			continue
+		}
+		if len(cur) > 0 && rules.IsStructuralLine(t) && rules.IsStructuralLine(cur[len(cur)-1]) {
+			cur = append(cur, t)
+			continue
+		}
+		flush()
+		cur = []string{t}
+		if !rules.IsStructuralLine(t) {
+			flush()
+		}
+	}
+	flush()
+	return strings.Join(groups, "\n\n") + "\n"
+}
+
+// chapterOutlineTitle 取本章大纲标题（扁平优先，分层回落），取不到返回空。
+func chapterOutlineTitle(st *store.Store, chapter int) string {
+	if e, err := st.Outline.GetChapterOutline(chapter); err == nil && e != nil && e.Title != "" {
+		return e.Title
+	}
+	if e, err := st.Outline.GetChapterFromLayered(chapter); err == nil && e != nil {
+		return e.Title
+	}
+	return ""
+}
+
 func (t *CommitChapterTool) executeRewriteCommit(
 	chapter int,
 	summary string,
@@ -441,7 +506,9 @@ func (t *CommitChapterTool) executeRewriteCommit(
 			chapter, mode, chapter, mode, errs.ErrToolPrecondition)
 	}
 
-	// 3. 覆盖终稿
+	// 3. 覆盖终稿（格式归一幂等：播种自归一终稿的草稿重排结果不变）
+	content = normalizeChapterFormat(t.store, chapter, content)
+	wordCount = domain.WordCount(content)
 	if err := t.store.Drafts.SaveFinalChapter(chapter, content); err != nil {
 		return nil, fmt.Errorf("rewrite: save final chapter: %w: %w", errs.ErrStoreWrite, err)
 	}
