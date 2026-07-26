@@ -70,6 +70,8 @@
 
 - **叙事手法**：视角是否统一或有意切换？时间处理（闪回/预叙/留白）是否自然？信息释放节奏是否合理（该藏的藏、该露的露）？引用视角混乱或信息释放不当的段落。
 
+- **排版规范**：对话是否漏加引号、是否使用中文弯引号“”、对白内标点是否全角。直引号与未闭合引号已由机械检查覆盖（见 `rule_violations` 映射表），"漏加引号"需阅读原文判断；成规模出现即出 issue，evidence 引用原句。
+
 - **情感打动力**：是否有让读者心跳加速、喉头发紧或嘴角上扬的段落？如果整章情感平淡，指出最该加强的 1-2 个位置和建议手法（如延迟揭示、感官特写、节奏突变）。
 
 - **全书级固化（style_stats）**：`episodic_memory.style_stats`（如有）是代码对全部已写章节的确定性统计：句式模式类计数（patterns，含章均 per_chapter）、近期高频短语（top_phrases）、跨章逐字重复句（repeated_sentences）、章末形态（ending.short_ratio 为短句收尾章占比）、开篇时间词率（opening_time_rate）、标题格式混用（title_formats）。审阅窗口内每处都"正常"的句式，全书章均几十次就是病——当某模式章均次数明显异常、章末短句占比逼近 1、同一长句跨多章复现、标题格式混用时，必须在 aesthetic（标题问题归 consistency）出 issue 并直接引用统计数字。统计只给事实，是否成病由你按题材与文风裁定。
@@ -90,6 +92,8 @@
 | `forbidden_phrases` | aesthetic | 同上 |
 | `fatigue_words` | aesthetic | severity=warning → issue 一条，evidence 引用原文 |
 | `pov_person` | continuity | severity=warning → issue 一条，evidence 引用原文的第一人称叙述段；仅 "third"（第三人称约束）有机械检查 |
+| `straight_quotes` | aesthetic | severity=warning → issue 一条，evidence 引用直引号对白段，建议改为中文弯引号“” |
+| `unbalanced_quotes` | aesthetic | severity=warning → issue 一条，evidence 引用引号未闭合/配对错乱的段落 |
 
 同一位置还有 `continuity_issues`（commit 时对状态/关系/出场申报的机械检测结果，无发现时该字段缺省），同样只映射进现有七维：
 

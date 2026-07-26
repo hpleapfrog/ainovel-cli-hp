@@ -116,3 +116,52 @@ func TestLint_ParagraphBreakSkipsStructuralLines(t *testing.T) {
 		}
 	}
 }
+
+func TestLint_StraightQuotes(t *testing.T) {
+	// 直引号 " ×2 + ' ×2，共 4 处
+	text := "# 第一章\n他说：“你好。”\n她写下了\"作废\"二字，旁边还有'待定'。\n夜色渐深。"
+	vs := Lint(text)
+	var v *Violation
+	for i := range vs {
+		if vs[i].Rule == "straight_quotes" {
+			v = &vs[i]
+			break
+		}
+	}
+	if v == nil {
+		t.Fatalf("expected straight_quotes violation: %+v", vs)
+	}
+	if v.Actual != 4 {
+		t.Errorf("count: got %v want 4", v.Actual)
+	}
+	if v.Severity != SeverityWarning {
+		t.Errorf("severity: %v", v.Severity)
+	}
+}
+
+func TestLint_UnbalancedQuotes(t *testing.T) {
+	// 第一行引号未闭合（开 2 / 闭 1），差值 1
+	text := "# 第一章\n他说：“你好。\n她答：“嗯。”\n夜色渐深。"
+	vs := Lint(text)
+	var v *Violation
+	for i := range vs {
+		if vs[i].Rule == "unbalanced_quotes" {
+			v = &vs[i]
+			break
+		}
+	}
+	if v == nil {
+		t.Fatalf("expected unbalanced_quotes violation: %+v", vs)
+	}
+	if v.Actual != 1 {
+		t.Errorf("diff: got %v want 1", v.Actual)
+	}
+}
+
+func TestLint_QuotesClean(t *testing.T) {
+	// 弯引号配对齐全、无直引号：两条规则都不报
+	text := "# 第一章\n他说：“你好。”她答：“嗯。”\n引语中再引用：‘注意。’\n夜色渐深。"
+	if vs := Lint(text); len(vs) != 0 {
+		t.Errorf("curly quotes should pass: %+v", vs)
+	}
+}
