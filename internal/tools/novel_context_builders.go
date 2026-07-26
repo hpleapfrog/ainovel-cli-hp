@@ -852,9 +852,11 @@ func deriveCharacterState(changes []domain.StateChange) []charState {
 	var result []charState
 	for name, fields := range latest {
 		cs := charState{name: name}
+		shown := make(map[string]bool)
 		for _, field := range []string{"status", "location", "realm", "power", "rank", "condition"} {
 			if c, ok := fields[field]; ok {
 				cs.summary = append(cs.summary, fmt.Sprintf("%s=%s", field, c.NewValue))
+				shown[field] = true
 			}
 		}
 		// 补充：取最后一条其他字段作为兜底描述
@@ -862,8 +864,24 @@ func deriveCharacterState(changes []domain.StateChange) []charState {
 			for _, field := range []string{"alive", "affiliation", "identity", "role"} {
 				if c, ok := fields[field]; ok {
 					cs.summary = append(cs.summary, fmt.Sprintf("%s=%s", field, c.NewValue))
+					shown[field] = true
 				}
 			}
+		}
+		// 数值事实字段（公司人数、金额、年龄等）：非上述字段但值含数字的，
+		// 是跨章数值矛盾的唯一召回通道，按字段名排序稳定输出，每实体上限 3 条。
+		var numericFields []string
+		for field, c := range fields {
+			if !shown[field] && digitRe.MatchString(c.NewValue) {
+				numericFields = append(numericFields, field)
+			}
+		}
+		sort.Strings(numericFields)
+		for i, field := range numericFields {
+			if i >= 3 {
+				break
+			}
+			cs.summary = append(cs.summary, fmt.Sprintf("%s=%s", field, fields[field].NewValue))
 		}
 		if len(cs.summary) > 0 {
 			result = append(result, cs)

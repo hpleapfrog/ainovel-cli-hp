@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/voocel/agentcore/schema"
 	"github.com/voocel/ainovel-cli/internal/domain"
@@ -85,6 +86,17 @@ func (t *CheckConsistencyTool) Execute(_ context.Context, args json.RawMessage) 
 	}
 	if summaries, _ := t.store.Summaries.LoadRecentSummaries(a.Chapter, 2); len(summaries) > 0 {
 		result["recent_summaries"] = summaries
+	}
+	// 数值事实基线：全量 state_changes 的最新值视图（与 continuity_card 同源），
+	// 核对"公司人数"这类世界事实时以这里为准。
+	if changes, _ := t.store.World.LoadStateChanges(); len(changes) > 0 {
+		var facts []string
+		for _, cs := range deriveCharacterState(changes) {
+			facts = append(facts, cs.name+"："+strings.Join(cs.summary, "，"))
+		}
+		if len(facts) > 0 {
+			result["state_facts"] = facts
+		}
 	}
 
 	if _, err := t.store.Checkpoints.AppendArtifact(

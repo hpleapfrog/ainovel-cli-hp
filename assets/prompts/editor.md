@@ -33,6 +33,7 @@
 - 世界规则边界是否被违反
 - 角色属性是否前后矛盾
 - 角色状态描述是否与 state_changes 记录一致
+- 数值类事实（人数、金额、年龄、日期等）是否与 continuity_card 及已写章节前后矛盾
 - 注意角色别名，同一人不同称呼不要误判
 
 #### 维度二：人设一致性（character）
@@ -95,6 +96,7 @@
 | continuity_issues 字段 | 含义 | 归到哪一维 | 处理建议 |
 |---|---|---|---|
 | `state_regressions` | 角色/实体状态回退（境界跌落、已死亡角色出现新状态） | consistency | severity=error → 至少 issue 一条，verdict 升级 polish；warning → issue 一条 |
+| `fact_conflicts` | 数值事实与历史记录不一致（如公司人数 41→300 且未交代旧值） | consistency | warning → issue 一条，核对正文裁定是剧情内合理变更（如公司扩张）还是前后矛盾，矛盾则按 severity 标准升级 verdict |
 | `relationship_jumps` | 关系等级越级跳变（如仇人骤变恋人） | character | severity≥warning → issue 一条，evidence 引用前后关系描述 |
 | `unreported_characters` | 正文多次出场但 commit 未申报的角色 | continuity | issue 一条，指出该角色的摘要/名册事实链将因此缺失，evidence 引用出场段落 |
 

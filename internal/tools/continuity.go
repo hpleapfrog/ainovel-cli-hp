@@ -2,6 +2,7 @@ package tools
 
 import (
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -72,6 +73,51 @@ func isDeadState(s string) bool {
 	return strings.Contains(s, "死亡") || strings.Contains(s, "dead") ||
 		strings.Contains(s, "陨落") || strings.Contains(s, "牺牲") ||
 		strings.Contains(s, "毙命") || strings.Contains(s, "逝去")
+}
+
+// ── 1b. 数值事实冲突检测 ──
+
+var digitRe = regexp.MustCompile(`\d`)
+
+// detectFactConflicts 检测数值类事实的未交代变更：entity+field 历史最新值与本次
+// 申报值不同、且新旧值都含数字时记一条事实（如公司人数 41 → 300）。
+// 申报方在 old_value 里填对了历史值 = 明知旧值的剧情内变更（公司扩张、时间流逝），
+// 不记；未填或填错 = 变更缺乏交代依据，warning 级事实供 editor 裁定。
+// regressionFields 白名单字段由 detectStateRegression 覆盖，这里跳过。
+func detectFactConflicts(prior, incoming []domain.StateChange) []domain.FactConflict {
+	if len(incoming) == 0 || len(prior) == 0 {
+		return nil
+	}
+	latest := make(map[string]map[string]domain.StateChange)
+	for _, c := range prior {
+		if latest[c.Entity] == nil {
+			latest[c.Entity] = make(map[string]domain.StateChange)
+		}
+		latest[c.Entity][c.Field] = c
+	}
+
+	var result []domain.FactConflict
+	for _, ic := range incoming {
+		if slices.Contains(regressionFields, ic.Field) {
+			continue
+		}
+		curr, ok := latest[ic.Entity][ic.Field]
+		if !ok || curr.NewValue == ic.NewValue {
+			continue
+		}
+		if !digitRe.MatchString(curr.NewValue) || !digitRe.MatchString(ic.NewValue) {
+			continue
+		}
+		if ic.OldValue == curr.NewValue {
+			continue // 明知旧值的合理变更
+		}
+		result = append(result, domain.FactConflict{
+			Entity: ic.Entity, Field: ic.Field,
+			Prev: curr.NewValue, Next: ic.NewValue,
+			Severity: domain.SeverityWarning,
+		})
+	}
+	return result
 }
 
 // ── 2. 关系跳跃检测 ──

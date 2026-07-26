@@ -1134,3 +1134,42 @@ func TestContextToolInjectsForeshadowDue(t *testing.T) {
 		t.Fatalf("loading summary should report due count, got %q", payload.Summary)
 	}
 }
+
+// deriveCharacterState 的数值事实召回：组织规模、金额、年龄这类数值字段不在
+// 状态白名单里，但它们是跨章数值矛盾（公司 41 人→300 人）的唯一召回通道，
+// 必须上浮到 continuity_card / state_facts；非数字自定义字段仍不上卡。
+func TestDeriveCharacterStateSurfacesNumericFacts(t *testing.T) {
+	changes := []domain.StateChange{
+		// 纯数值事实实体：一个白名单字段都没有，也要凭数值字段上卡，且只取最新值
+		{Entity: "星辰科技", Field: "人数", NewValue: "41人", Chapter: 5},
+		{Entity: "星辰科技", Field: "人数", NewValue: "45人", Chapter: 8},
+		// 角色：白名单字段保持原顺序；非数字自定义字段不上卡；数值字段按字段名排序、上限 3 条
+		{Entity: "林砚", Field: "realm", NewValue: "筑基", Chapter: 5},
+		{Entity: "林砚", Field: "location", NewValue: "城外", Chapter: 6},
+		{Entity: "林砚", Field: "mood", NewValue: "低落", Chapter: 6},
+		{Entity: "林砚", Field: "存款", NewValue: "300两", Chapter: 6},
+		{Entity: "林砚", Field: "年龄", NewValue: "25岁", Chapter: 4},
+		{Entity: "林砚", Field: "积分", NewValue: "9000", Chapter: 6},
+		{Entity: "林砚", Field: "身高", NewValue: "180", Chapter: 3},
+	}
+	got := deriveCharacterState(changes)
+	byName := map[string]charState{}
+	for _, cs := range got {
+		byName[cs.name] = cs
+	}
+
+	org, ok := byName["星辰科技"]
+	if !ok || len(org.summary) != 1 || org.summary[0] != "人数=45人" {
+		t.Fatalf("纯数值实体应取最新值上卡, got %+v", got)
+	}
+
+	hero, ok := byName["林砚"]
+	if !ok {
+		t.Fatalf("missing 林砚, got %+v", got)
+	}
+	// 身高被每实体 3 条上限截掉；mood 无数字不上卡
+	want := []string{"location=城外", "realm=筑基", "存款=300两", "年龄=25岁", "积分=9000"}
+	if strings.Join(hero.summary, ",") != strings.Join(want, ",") {
+		t.Fatalf("got %v want %v", hero.summary, want)
+	}
+}

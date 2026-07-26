@@ -42,15 +42,28 @@ type UnreportedCharacter struct {
 	Severity ContinuityIssueSeverity `json:"severity"`
 }
 
+// FactConflict 数值类事实与历史记录不一致（如公司人数 41 → 300 且未交代旧值）。
+// Prev 是历史最新记录值，Next 是本次 commit 申报的新值。
+// old_value 与历史值吻合的申报视为明知旧值的合理变更（剧情内增长），不记。
+type FactConflict struct {
+	Entity   string                  `json:"entity"`
+	Field    string                  `json:"field"`
+	Prev     string                  `json:"prev"`
+	Next     string                  `json:"next"`
+	Severity ContinuityIssueSeverity `json:"severity"`
+}
+
 // ContinuityIssues 一章 commit 时的机械连续性检测结果（仅事实，不阻断）。
 type ContinuityIssues struct {
 	StateRegressions     []StateRegression     `json:"state_regressions,omitempty"`
 	RelationshipJumps    []RelationshipJump    `json:"relationship_jumps,omitempty"`
 	UnreportedCharacters []UnreportedCharacter `json:"unreported_characters,omitempty"`
+	FactConflicts        []FactConflict        `json:"fact_conflicts,omitempty"`
 }
 
 // Empty 判定是否没有任何发现。
 func (c *ContinuityIssues) Empty() bool {
 	return c == nil ||
-		(len(c.StateRegressions) == 0 && len(c.RelationshipJumps) == 0 && len(c.UnreportedCharacters) == 0)
+		(len(c.StateRegressions) == 0 && len(c.RelationshipJumps) == 0 &&
+			len(c.UnreportedCharacters) == 0 && len(c.FactConflicts) == 0)
 }

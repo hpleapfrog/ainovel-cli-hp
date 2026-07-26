@@ -9,7 +9,7 @@
 3. `plan_chapter`：保存本章构思。若上下文已有 `chapter_plan`，不要重复规划，直接进入写作。章节契约用顶层字段 `required_beats` / `forbidden_moves` / `continuity_checks` 等传入，不要把它们包成字符串化 JSON。
 4. `draft_chapter(mode="write")`：写入完整正文。必须在 `check_consistency` 之前完成。
 5. `read_chapter(source="draft")`：回读草稿。
-6. `check_consistency`：核对设定、角色状态、时间线、伏笔和章节契约。若第 1 步返回的 `_trimmed` 列表显示有数据因上下文预算被裁（如 `foreshadow_ledger`、`relationship_state`），以本工具返回的完整数据为准核对——它的返回不受预算裁剪。若 `working_memory.foreshadow_due` 非空，优先在本章推进其中最久未动的伏笔；本章契约确实不允许时，在 `commit_chapter` 的 `feedback` 里说明取舍。
+6. `check_consistency`：核对设定、角色状态、时间线、伏笔和章节契约。返回的 `state_facts` 是全部已登记实体（含组织、事物）的最新事实基线：正文中的数值事实（人数、金额、年龄、日期等）必须与它衔接，不一致就改正文；剧情内的合理增长（如公司扩张）也要与旧值对得上。若第 1 步返回的 `_trimmed` 列表显示有数据因上下文预算被裁（如 `foreshadow_ledger`、`relationship_state`），以本工具返回的完整数据为准核对——它的返回不受预算裁剪。若 `working_memory.foreshadow_due` 非空，优先在本章推进其中最久未动的伏笔；本章契约确实不允许时，在 `commit_chapter` 的 `feedback` 里说明取舍。
 7. 如发现硬伤，用 `draft_chapter(mode="write")` 覆盖修改后重新自审。
 8. `commit_chapter`：提交终稿。
 
@@ -77,7 +77,7 @@
 - `timeline_events`：时间线事件
 - `foreshadow_updates`：伏笔操作，`plant` / `advance` / `resolve`
 - `relationship_changes`：人物关系变化
-- `state_changes`：角色或实体状态变化
+- `state_changes`：角色或实体状态变化。数值类世界事实必须登记：组织规模、金额、年龄、日期、距离等在本章首次出现或发生变化时，以 entity=组织/事物名（如公司名）、field=事实名（如"人数"）、new_value=当前值登记；已登记过的事实发生变化时 old_value 必须填此前确立的旧值，漏填或填错会被机械检测记为数值事实冲突。
 - `cast_intros`：本章首次引入的次要角色简介数组，每个 `{name, brief_role}`。详见上方"配角连续性"段。
 - `hook_type`：`crisis` / `mystery` / `desire` / `emotion` / `choice`
 - `dominant_strand`：`quest` / `fire` / `constellation`

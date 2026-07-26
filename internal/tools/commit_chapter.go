@@ -239,13 +239,14 @@ func (t *CommitChapterTool) Execute(_ context.Context, args json.RawMessage) (js
 		}
 	}
 
-	// 5. 一致性检测：状态回退 + 关系跳跃 + 出场漏报（仅返事实，不阻断；
+	// 5. 一致性检测：状态回退 + 数值事实冲突 + 关系跳跃 + 出场漏报（仅返事实，不阻断；
 	//    落盘后经 novel_context 供 editor 消费，见下方 SaveContinuityIssues）
 	var continuityIssues *domain.ContinuityIssues
 	{
 		issues := &domain.ContinuityIssues{}
 		if len(priorStateChanges) > 0 {
 			issues.StateRegressions = detectStateRegression(priorStateChanges, a.StateChanges)
+			issues.FactConflicts = detectFactConflicts(priorStateChanges, a.StateChanges)
 		}
 		if len(priorRelations) > 0 {
 			issues.RelationshipJumps = detectRelationshipJump(priorRelations, a.RelationshipChanges)

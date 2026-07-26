@@ -312,3 +312,84 @@ func TestClassifyRelationMultiKeywordDeterministic(t *testing.T) {
 		}
 	}
 }
+
+// ── detectFactConflicts：数值事实未交代变更 ──
+
+func TestDetectFactConflicts(t *testing.T) {
+	history := []domain.StateChange{
+		{Entity: "星辰科技", Field: "人数", NewValue: "41人", Chapter: 5},
+		{Entity: "林砚", Field: "realm", NewValue: "筑基", Chapter: 5},
+	}
+
+	t.Run("数值变更未交代旧值记 warning", func(t *testing.T) {
+		got := detectFactConflicts(history, []domain.StateChange{
+			{Entity: "星辰科技", Field: "人数", NewValue: "300人", Chapter: 30},
+		})
+		if len(got) != 1 || got[0].Prev != "41人" || got[0].Next != "300人" || got[0].Severity != domain.SeverityWarning {
+			t.Fatalf("41→300 未交代旧值应记 warning, got %+v", got)
+		}
+	})
+
+	t.Run("old_value 与历史值吻合视为合理变更不报", func(t *testing.T) {
+		got := detectFactConflicts(history, []domain.StateChange{
+			{Entity: "星辰科技", Field: "人数", OldValue: "41人", NewValue: "300人", Chapter: 30},
+		})
+		if len(got) != 0 {
+			t.Fatalf("明知旧值的剧情内变更不应记, got %+v", got)
+		}
+	})
+
+	t.Run("old_value 填错也记", func(t *testing.T) {
+		got := detectFactConflicts(history, []domain.StateChange{
+			{Entity: "星辰科技", Field: "人数", OldValue: "50人", NewValue: "300人", Chapter: 30},
+		})
+		if len(got) != 1 {
+			t.Fatalf("old_value 与历史不符应记, got %+v", got)
+		}
+	})
+
+	t.Run("白名单字段/无数字/无历史/值一致均不报", func(t *testing.T) {
+		got := detectFactConflicts(history, []domain.StateChange{
+			{Entity: "林砚", Field: "realm", NewValue: "练气", Chapter: 30},       // 回退白名单字段归 detectStateRegression
+			{Entity: "星辰科技", Field: "人数", NewValue: "四十一人", Chapter: 30}, // 无数字，无法机械比对
+			{Entity: "新公司", Field: "人数", NewValue: "10人", Chapter: 30},       // 无历史记录
+			{Entity: "星辰科技", Field: "人数", NewValue: "41人", Chapter: 30},     // 与历史一致
+		})
+		if len(got) != 0 {
+			t.Fatalf("这些场景都不应记, got %+v", got)
+		}
+	})
+}
+
+// commit 全路径：数值事实冲突经 commit 检测并落盘供 editor 消费。
+func TestCommitDetectsFactConflict(t *testing.T) {
+	st := newCommittedBook(t)
+	if err := st.World.AppendStateChanges([]domain.StateChange{
+		{Entity: "星辰科技", Field: "人数", NewValue: "41人", Chapter: 2},
+	}); err != nil {
+		t.Fatalf("seed state: %v", err)
+	}
+
+	issues := commitForContinuity(t, st, map[string]any{
+		"chapter":    3,
+		"summary":    "公司突然扩张",
+		"characters": []string{"林砚"},
+		"key_events": []string{"扩招"},
+		"state_changes": []map[string]any{
+			{"entity": "星辰科技", "field": "人数", "new_value": "300人"},
+		},
+	})
+	if issues == nil || len(issues.FactConflicts) != 1 {
+		t.Fatalf("expected one fact conflict, got %+v", issues)
+	}
+	fc := issues.FactConflicts[0]
+	if fc.Entity != "星辰科技" || fc.Prev != "41人" || fc.Next != "300人" || fc.Severity != domain.SeverityWarning {
+		t.Fatalf("fact conflict fields wrong: %+v", fc)
+	}
+
+	// 落盘同步（editor 消费侧）
+	persisted := st.World.LoadContinuityIssues(3)
+	if persisted == nil || len(persisted.FactConflicts) != 1 {
+		t.Fatalf("issues should persist for editor, got %+v", persisted)
+	}
+}
