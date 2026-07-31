@@ -114,7 +114,7 @@ func OutlineExhausted(snap *Snapshot) []Finding {
 		Category:   CatPlanning,
 		Severity:   SevCritical,
 		Confidence: ConfHigh,
-		AutoLevel:  AutoSafe,
+		AutoLevel:  AutoSuggest,
 		Target:     "runtime.recovery",
 		Title:      fmt.Sprintf("大纲耗尽: 已完成 %d 章 >= 已规划 %d 章", completed, outlinedCount),
 		Evidence:   fmt.Sprintf("phase=%s, completed=%d, outlined=%d", p.Phase, completed, outlinedCount),

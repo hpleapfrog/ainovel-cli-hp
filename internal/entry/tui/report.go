@@ -413,8 +413,8 @@ func (m Model) handleReportRepairKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if len(repairable) == 0 {
 		return m, nil
 	}
-	if m.snapshot.RuntimeState == "running" {
-		m.report.notice = "运行中不可自动修复：请先停止创作，再打开 /diag 按 f 修复。"
+	if m.snapshot.RuntimeState == "running" || m.snapshot.RuntimeState == "paused" {
+		m.report.notice = "运行或暂停中不可自动修复：请先停止创作，再打开 /diag 按 f 修复。"
 		m.report.setContent(m.report.renderW)
 		return m, nil
 	}

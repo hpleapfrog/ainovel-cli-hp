@@ -110,12 +110,12 @@ func TestOutlineExhaustedMeta(t *testing.T) {
 		t.Fatalf("expected 1 finding, got %d", len(findings))
 	}
 	f := findings[0]
-	if f.Confidence != ConfHigh || f.AutoLevel != AutoSafe {
-		t.Fatalf("expected high/safe, got %s/%s", f.Confidence, f.AutoLevel)
+	if f.Confidence != ConfHigh || f.AutoLevel != AutoSuggest {
+		t.Fatalf("expected high/suggest, got %s/%s", f.Confidence, f.AutoLevel)
 	}
 	actions := PlanActions(findings)
-	if len(actions) != 1 || actions[0].Kind != ActionEnqueueFollowUp {
-		t.Fatalf("expected 1 enqueue_follow_up action, got %+v", actions)
+	if len(actions) != 0 {
+		t.Fatalf("AutoSuggest finding should not auto-plan actions, got %+v", actions)
 	}
 }
 

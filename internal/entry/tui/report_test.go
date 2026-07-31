@@ -29,6 +29,19 @@ func TestReportRepairBlockedWhileRunning(t *testing.T) {
 	}
 }
 
+func TestReportRepairBlockedWhilePaused(t *testing.T) {
+	m := Model{snapshot: host.UISnapshot{RuntimeState: "paused"}}
+	m.report = &reportState{reqID: 1, report: repairableReport()}
+
+	_, cmd := m.handleReportKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("f")})
+	if cmd != nil {
+		t.Fatal("repair must not run while engine is paused")
+	}
+	if m.report.notice == "" {
+		t.Fatal("expected a notice explaining the block")
+	}
+}
+
 func TestReportFooterShowsRepairHint(t *testing.T) {
 	st := newReportState(120, 40, 1, time.Now())
 	st.load(*repairableReport(), 96, "", time.Now())
