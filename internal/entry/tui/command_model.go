@@ -534,6 +534,7 @@ func (m Model) handleProviderInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if state.provStep == provStepDone {
 		if msg.Type == tea.KeyEnter {
 			savedName := state.provInput
+			wasAdd := state.provAct == provActionAdd
 			state.provAct = provActionNone
 			state.provInput = ""
 			state.providers = m.runtime.ConfiguredProviders()
@@ -545,6 +546,14 @@ func (m Model) handleProviderInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			state.syncModels(m.runtime, "")
 			state.message = ""
+			// 新建的 provider 还没有模型：直接落到「添加模型」输入，
+			// 否则用户面对空列表按 Enter 只会吃到"没有已配置模型"的报错
+			if wasAdd && len(state.models) == 0 {
+				state.focus = modelFocusModel
+				state.adding = true
+				state.addInput = ""
+				state.message = "新 provider 还没有模型，先添加一个"
+			}
 			return m, tea.Batch(m.textarea.Focus(), fetchSnapshot(m.runtime))
 		}
 		return m, nil
@@ -585,6 +594,13 @@ func (m Model) handleProviderInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if val == "" {
 				state.message = "Provider 名称不能为空"
 				return m, nil
+			}
+			// 重名在名称步即拦截：等到最后一步才报错的旧行为会关闭向导、丢失全部输入
+			if state.provAct == provActionAdd {
+				if _, _, _, ok := m.runtime.GetProviderConfig(val); ok {
+					state.message = fmt.Sprintf("Provider %q 已存在，请换个名称", val)
+					return m, nil
+				}
 			}
 			state.provName = val
 			if state.provAct == provActionAdd {
@@ -670,6 +686,11 @@ func renderProviderInput(state *modelSwitchState) []string {
 	title := lipgloss.NewStyle().Foreground(colorAccent).Bold(true).
 		Render(fmt.Sprintf("  %s Provider", action))
 	lines = append(lines, title)
+	if state.provAct == provActionEdit {
+		// set 语义：每步预填当前值，Enter 以框内内容为准——不动=保留，清空=删除
+		lines = append(lines, lipgloss.NewStyle().Foreground(colorDim).
+			Render("  字段已预填当前值：不动=保留，清空后 Enter=删除该项"))
+	}
 
 	steps := []providerInputStep{provStepName, provStepType, provStepAPIKey, provStepBaseURL}
 	for _, s := range steps {

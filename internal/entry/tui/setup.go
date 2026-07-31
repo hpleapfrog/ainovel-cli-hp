@@ -215,7 +215,8 @@ func (s *setupState) handleAddStepEnter(m *Model) (tea.Model, tea.Cmd) {
 		return m, nil
 	case setupAddStepURL:
 		s.addURL = val
-		// 编辑走 UpdateProvider（空字段保留原值），新增走 AddProvider。
+		// 编辑走 UpdateProvider（type/key/url 以框内内容为准，清空=删除该项；
+		// 各步已预填当前值，不动即保留），新增走 AddProvider。
 		// 名称在编辑流中锁定：改名=新建 provider，不支持 rename。
 		if s.editing {
 			if err := m.runtime.UpdateProvider(s.addName, s.addType, s.addKey, s.addURL); err != nil {
@@ -226,7 +227,7 @@ func (s *setupState) handleAddStepEnter(m *Model) (tea.Model, tea.Cmd) {
 			}
 			s.message = fmt.Sprintf("Provider %q 已更新", s.addName)
 			if s.addKey == "" || s.addURL == "" {
-				s.message += "（留空字段保留原值）"
+				s.message += "（留空字段已清除）"
 			}
 			s.focus = setupFocusAddProvider
 			s.cursor = 0

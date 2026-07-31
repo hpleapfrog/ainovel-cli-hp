@@ -1225,6 +1225,8 @@ func (h *Host) RemoveProviderModel(provider, model string) error {
 }
 
 // RenameProviderModel 重命名 provider 下的模型并同步所有引用点（default/角色/fallback），落盘配置。
+// 落盘后重建活模型客户端：正在使用该模型的角色当次会话即切到新名，
+// 否则运行时会继续用旧名发请求直到重启（issue：面板重命名后运行时不生效）。
 func (h *Host) RenameProviderModel(provider, oldName, newName string) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -1234,6 +1236,7 @@ func (h *Host) RenameProviderModel(provider, oldName, newName string) error {
 	if err := h.saveConfigLocked(); err != nil {
 		return err
 	}
+	h.reswapModelsLocked()
 	h.emitEvent(Event{
 		Time:     time.Now(),
 		Category: "SYSTEM",
@@ -1258,6 +1261,7 @@ func (h *Host) AddProvider(name, apiType, apiKey, baseURL string) error {
 	if err := h.saveConfigLocked(); err != nil {
 		return err
 	}
+	h.reswapModelsLocked()
 	h.emitEvent(Event{
 		Time:     time.Now(),
 		Category: "SYSTEM",
@@ -1296,19 +1300,18 @@ func (h *Host) RemoveProvider(name string) error {
 	return nil
 }
 
-// UpdateProvider 更新一个已有 Provider 的配置并落盘。非零值字段覆盖，空字符串保留原值。
+// UpdateProvider 整体覆盖一个已有 Provider 的面板管理字段并落盘。
+// type/api_key/base_url 以传入值为准：空字符串即清除（TUI 编辑流每步预填当前值，
+// Enter 表示「框里是什么就存什么」——不动=保留，清空=删除）。
+// models/extra/extra_body/stream_idle_timeout 等面板外字段保留原值。
+// 落盘成功后重建 default 与各角色的活模型客户端，新凭证当次会话生效。
 func (h *Host) UpdateProvider(name, apiType, apiKey, baseURL string) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	pc := bootstrap.ProviderConfig{}
-	if apiType != "" {
-		pc.Type = apiType
-	}
-	if apiKey != "" {
-		pc.APIKey = apiKey
-	}
-	if baseURL != "" {
-		pc.BaseURL = baseURL
+	pc := bootstrap.ProviderConfig{
+		Type:    apiType,
+		APIKey:  apiKey,
+		BaseURL: baseURL,
 	}
 	if err := h.cfg.UpdateProvider(name, pc); err != nil {
 		return err
@@ -1316,6 +1319,7 @@ func (h *Host) UpdateProvider(name, apiType, apiKey, baseURL string) error {
 	if err := h.saveConfigLocked(); err != nil {
 		return err
 	}
+	h.reswapModelsLocked()
 	h.emitEvent(Event{
 		Time:     time.Now(),
 		Category: "SYSTEM",
@@ -1358,6 +1362,29 @@ func (h *Host) saveConfigLocked() error {
 		}
 	}
 	return nil
+}
+
+// reswapModelsLocked 用当前配置重建 default 与各角色的活模型客户端。
+// 凭证编辑 / 新增 provider / 模型重命名落盘后调用，使变更当次会话生效（不重启）：
+// 活客户端在启动时把 api_key/base_url/模型名烘进实例，不重建会一直用旧值发请求。
+// 单个角色重建失败只告警不中断——配置已落盘，不能因一个角色失败影响其余。
+// 调用方须持有 h.mu。
+func (h *Host) reswapModelsLocked() {
+	h.models.SyncConfig(h.cfg)
+	type target struct{ role, provider, model string }
+	targets := make([]target, 0, len(h.cfg.Roles)+1)
+	targets = append(targets, target{"", h.cfg.Provider, h.cfg.ModelName})
+	for role, rc := range h.cfg.Roles {
+		targets = append(targets, target{role, rc.Provider, rc.Model})
+	}
+	for _, t := range targets {
+		if t.provider == "" || t.model == "" {
+			continue
+		}
+		if err := h.models.Swap(t.role, t.provider, t.model); err != nil {
+			slog.Warn("重建模型客户端失败", "module", "host", "role", t.role, "provider", t.provider, "model", t.model, "err", err)
+		}
+	}
 }
 
 // concreteThinkingRoles 是可应用推理强度的具体角色（与 agents.ApplyThinking 路由一致）。
