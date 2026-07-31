@@ -244,3 +244,116 @@ func TestRenameProviderModel_SyncsReferences(t *testing.T) {
 		t.Fatal("conflicting new name should error (大小写不敏感)")
 	}
 }
+
+func TestUpdateProvider_SetSemanticsClearsPanelFields(t *testing.T) {
+	cfg := Config{Providers: map[string]ProviderConfig{
+		"p": {
+			Type: "openai", APIKey: "sk-old", BaseURL: "http://old/v1",
+			Models: []string{"m1"}, StreamIdleTimeout: "15m",
+			ExtraBody: map[string]any{"temperature": 0.8},
+		},
+	}}
+	// 面板编辑语义：type/key/url 以传入值为准，空字符串=清除该项。
+	// （TUI 编辑流每步预填当前值，用户清空即删除；旧合并语义下 key/url 永远无法清除。）
+	if err := cfg.UpdateProvider("p", ProviderConfig{Type: "openai"}); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	pc := cfg.Providers["p"]
+	if pc.APIKey != "" || pc.BaseURL != "" {
+		t.Fatalf("key/url 应被清除, got key=%q url=%q", pc.APIKey, pc.BaseURL)
+	}
+	if pc.Type != "openai" {
+		t.Fatalf("type 应保留传入值, got %q", pc.Type)
+	}
+	// 面板外字段不受影响
+	if len(pc.Models) != 1 || pc.Models[0] != "m1" {
+		t.Fatalf("models 应保留, got %v", pc.Models)
+	}
+	if pc.StreamIdleTimeout != "15m" {
+		t.Fatalf("stream_idle_timeout 应保留, got %q", pc.StreamIdleTimeout)
+	}
+	if pc.ExtraBody["temperature"] != 0.8 {
+		t.Fatalf("extra_body 应保留, got %v", pc.ExtraBody)
+	}
+}
+
+func TestUpdateProvider_MissingProvider(t *testing.T) {
+	cfg := Config{Providers: map[string]ProviderConfig{"a": {}}}
+	if err := cfg.UpdateProvider("nope", ProviderConfig{}); err == nil {
+		t.Fatal("missing provider should error")
+	}
+}
+
+func TestResolveContextWindow_PerModelMapPriority(t *testing.T) {
+	cfg := Config{
+		ContextWindow: 300000,
+		ContextWindows: map[string]int{
+			"my-256k-model": 256000,
+			"zero-model":    0, // 非正值视为未配置，继续下探
+		},
+	}
+	// 1. 按模型名命中：优先级最高（压过全局 context_window 与 registry）
+	if w, src := cfg.ResolveContextWindow("my-256k-model"); w != 256000 || src != CtxWindowModelConfig {
+		t.Fatalf("map 命中应返回 256000/model_config, got %d/%s", w, src)
+	}
+	// 2. map 未命中 → 全局 context_window
+	if w, src := cfg.ResolveContextWindow("other-model"); w != 300000 || src != CtxWindowConfig {
+		t.Fatalf("map 未命中应回落全局 300000/config, got %d/%s", w, src)
+	}
+	// 3. 非正值条目等同未配置
+	if w, src := cfg.ResolveContextWindow("zero-model"); w != 300000 || src != CtxWindowConfig {
+		t.Fatalf("非正值条目应被忽略, got %d/%s", w, src)
+	}
+	// 4. 全无配置 + 未知模型 → 200k 兜底
+	bare := Config{}
+	if w, src := bare.ResolveContextWindow("definitely-not-a-registered-model-xyz"); w != DefaultContextWindow || src != CtxWindowDefault {
+		t.Fatalf("未知模型应兜底 %d/default, got %d/%s", DefaultContextWindow, w, src)
+	}
+}
+
+func TestRenameProviderModel_MigratesContextWindow(t *testing.T) {
+	cfg := Config{
+		Provider:  "a",
+		ModelName: "old",
+		Providers: map[string]ProviderConfig{"a": {Models: []string{"old"}}},
+		ContextWindows: map[string]int{
+			"old":   256000,
+			"other": 128000,
+		},
+	}
+	if err := cfg.RenameProviderModel("a", "old", "new"); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+	if _, ok := cfg.ContextWindows["old"]; ok {
+		t.Fatal("旧键应被移除")
+	}
+	if got := cfg.ContextWindows["new"]; got != 256000 {
+		t.Fatalf("窗口记录应迁移到新键, got %d", got)
+	}
+	if got := cfg.ContextWindows["other"]; got != 128000 {
+		t.Fatalf("无关键不应受影响, got %d", got)
+	}
+}
+
+func TestRemoveProviderModel_CleansContextWindow(t *testing.T) {
+	cfg := Config{
+		Providers: map[string]ProviderConfig{
+			"a": {Models: []string{"m1", "shared"}},
+			"b": {Models: []string{"shared"}},
+		},
+		ContextWindows: map[string]int{
+			"m1":     256000,
+			"shared": 128000,
+		},
+	}
+	// m1 只在 a 下列出：删除后窗口记录一并清除
+	cfg.RemoveProviderModel("a", "m1")
+	if _, ok := cfg.ContextWindows["m1"]; ok {
+		t.Fatal("不再出现在任何列表的模型，其窗口记录应被清除")
+	}
+	// shared 仍在 b 下列出：窗口记录保留
+	cfg.RemoveProviderModel("a", "shared")
+	if got := cfg.ContextWindows["shared"]; got != 128000 {
+		t.Fatalf("仍被其他 provider 列出的模型，窗口记录应保留, got %d", got)
+	}
+}

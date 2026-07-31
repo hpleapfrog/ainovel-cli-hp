@@ -167,6 +167,12 @@ type Config struct {
 	// 仅影响压缩阈值，不改变 LLM API 实际请求长度；配置值由用户自负其责。
 	ContextWindow int `json:"context_window,omitempty"`
 
+	// ContextWindows 按模型名指定上下文压缩窗口（键名与模型名逐字一致），
+	// 优先级高于顶层 ContextWindow 与 registry——多个模型窗口各不相同时用它，
+	// 单个模型全局钉值用 ContextWindow 即可。仅影响压缩阈值，不改变 API 实际请求长度。
+	// /model 面板重命名/删除模型时同步迁移/清除对应键（Host 侧）。
+	ContextWindows map[string]int `json:"context_windows,omitempty"`
+
 	// Budget 单本书的成本预算政策；book_usd > 0 才启用。
 	Budget BudgetConfig `json:"budget,omitzero"`
 
@@ -366,18 +372,23 @@ func (c *Config) FillDefaults() {
 type ContextWindowSource string
 
 const (
-	CtxWindowConfig   ContextWindowSource = "config"   // 配置文件 context_window 显式指定
-	CtxWindowRegistry ContextWindowSource = "registry" // OpenRouter 基线命中
-	CtxWindowDefault  ContextWindowSource = "default"  // 兜底（自定义代理/未知模型）
+	CtxWindowModelConfig ContextWindowSource = "model_config" // 配置文件 context_windows 按模型名指定
+	CtxWindowConfig      ContextWindowSource = "config"       // 配置文件 context_window 显式指定
+	CtxWindowRegistry    ContextWindowSource = "registry"     // OpenRouter 基线命中
+	CtxWindowDefault     ContextWindowSource = "default"      // 兜底（自定义代理/未知模型）
 )
 
 // ResolveContextWindow 解析上下文压缩使用的有效窗口，按优先级：
-//  1. 配置文件 ContextWindow > 0 → 直接用（最高优先级，可超过模型真窗口）
-//  2. models.DefaultRegistry 按模型名查询（OpenRouter 基线 + 24h 刷新）
-//  3. 兜底 DefaultContextWindow（自定义代理 / 未知模型）
+//  1. ContextWindows[modelName] > 0 → 按模型名的显式指定（最具体，优先）
+//  2. 配置文件 ContextWindow > 0 → 全局显式指定（可超过模型真窗口）
+//  3. models.DefaultRegistry 按模型名查询（OpenRouter 基线 + 24h 刷新）
+//  4. 兜底 DefaultContextWindow（自定义代理 / 未知模型）
 //
 // 注意：返回值仅用于压缩阈值计算，不会缩小 LLM API 真实可发请求长度。
 func (c Config) ResolveContextWindow(modelName string) (int, ContextWindowSource) {
+	if mw := c.ContextWindows[modelName]; mw > 0 {
+		return mw, CtxWindowModelConfig
+	}
 	if c.ContextWindow > 0 {
 		return c.ContextWindow, CtxWindowConfig
 	}
@@ -401,12 +412,15 @@ func (c Config) ResolveReasoningEffort(role string) string {
 
 // LogContextWindowChoice 打印某个角色的窗口决策。source=default 时发 Warn 提示
 // 该模型未在 registry 命中（OpenRouter 也未收录），后续上下文压缩会按兜底窗口
-// 触发——若模型实际窗口更大，可在配置文件用 context_window 显式指定，避免被提前压缩、丢史。
+// 触发——若模型实际窗口更大，可在配置文件用 context_windows 按模型名指定（或
+// context_window 全局指定），避免被提前压缩、丢史。
 func LogContextWindowChoice(role, model string, window int, source ContextWindowSource) {
 	attrs := []any{"module", "context", "role", role, "model", model, "window", window, "source", source}
 	switch source {
 	case CtxWindowDefault:
-		slog.Warn("未识别的模型，使用兜底窗口（自定义代理或 OpenRouter 未收录，可用 context_window 显式指定）", attrs...)
+		slog.Warn("未识别的模型，使用兜底窗口（自定义代理或 OpenRouter 未收录，可用 context_windows/context_window 显式指定）", attrs...)
+	case CtxWindowModelConfig:
+		slog.Info("上下文窗口（来自配置文件 context_windows）", attrs...)
 	case CtxWindowConfig:
 		slog.Info("上下文窗口（来自配置文件 context_window）", attrs...)
 	default:
@@ -477,6 +491,8 @@ func (c *Config) AddProviderModel(provider, model string) error {
 }
 
 // RemoveProviderModel 从指定 provider 的 Models 列表中移除一个模型名。
+// 若该模型在任何 provider 列表与引用点（default/角色/fallback）都不再出现，
+// 同步清除 context_windows 里的窗口记录，避免残留孤儿键。
 func (c *Config) RemoveProviderModel(provider, model string) {
 	pc, ok := c.Providers[provider]
 	if !ok {
@@ -492,6 +508,35 @@ func (c *Config) RemoveProviderModel(provider, model string) {
 	}
 	pc.Models = filtered
 	c.Providers[provider] = pc
+	if len(c.ContextWindows) > 0 && !c.modelListedAnywhere(model) {
+		delete(c.ContextWindows, model)
+	}
+}
+
+// modelListedAnywhere 报告模型名是否仍出现在任一 provider 的 Models 列表
+// 或引用点（default/角色/fallback）中（大小写不敏感）。
+func (c Config) modelListedAnywhere(model string) bool {
+	for _, pc := range c.Providers {
+		for _, m := range pc.Models {
+			if strings.EqualFold(m, model) {
+				return true
+			}
+		}
+	}
+	if strings.EqualFold(c.ModelName, model) {
+		return true
+	}
+	for _, rc := range c.Roles {
+		if strings.EqualFold(rc.Model, model) {
+			return true
+		}
+		for _, fb := range rc.Fallbacks {
+			if strings.EqualFold(fb.Model, model) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // AddProvider 新增一个 Provider 条目。
@@ -523,7 +568,10 @@ func (c *Config) RemoveProvider(name string) error {
 	return nil
 }
 
-// UpdateProvider 更新一个已有 Provider 的配置；只覆盖非零值字段。
+// UpdateProvider 整体覆盖一个已有 Provider 的面板管理字段。
+// type/api_key/base_url 以传入值为准，空字符串即清除——TUI 编辑流每步预填当前值，
+// Enter 以框内内容为准（不动=保留，清空=删除）。
+// api/models/extra/extra_body/stream_idle_timeout 等面板外字段保留非零合并语义。
 func (c *Config) UpdateProvider(name string, pc ProviderConfig) error {
 	name = strings.TrimSpace(name)
 	if name == "" {
@@ -533,17 +581,11 @@ func (c *Config) UpdateProvider(name string, pc ProviderConfig) error {
 	if !ok {
 		return fmt.Errorf("provider %q not found: %w", name, errs.ErrConfig)
 	}
-	if pc.Type != "" {
-		existing.Type = pc.Type
-	}
+	existing.Type = strings.TrimSpace(pc.Type)
+	existing.APIKey = strings.TrimSpace(pc.APIKey)
+	existing.BaseURL = strings.TrimSpace(pc.BaseURL)
 	if pc.API != "" {
 		existing.API = pc.API
-	}
-	if pc.APIKey != "" {
-		existing.APIKey = pc.APIKey
-	}
-	if pc.BaseURL != "" {
-		existing.BaseURL = pc.BaseURL
 	}
 	if pc.StreamIdleTimeout != "" {
 		existing.StreamIdleTimeout = pc.StreamIdleTimeout
@@ -675,6 +717,12 @@ func (c *Config) RenameProviderModel(provider, oldName, newName string) error {
 		if changed {
 			c.Roles[role] = rc
 		}
+	}
+
+	// context_windows 窗口记录跟着迁移，否则改名后按键名解析会落空、回退兜底
+	if w, ok := c.ContextWindows[oldName]; ok {
+		delete(c.ContextWindows, oldName)
+		c.ContextWindows[newName] = w
 	}
 	return nil
 }

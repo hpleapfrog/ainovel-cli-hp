@@ -1,34 +1,60 @@
 {
-  // 本文件是示例配置。三层加载：~/.ainovel/config.json（基底）→ ./.ainovel/config.json → --config 指定文件，
-  // 逐层合并：标量/map 字段按"非零值覆盖"——上层只能覆盖，不能复位/清除下层已设的值
-  // （例如想清掉全局的 reasoning_effort，只能改全局文件）；budget/notify 为整块覆盖。
+  // ════════════════════════════════════════════════════════════════
+  // ainovel-cli 配置示例（JSONC：支持 // 行注释）
   //
+  // 【最小可用】只需三件事：provider 指针、model、providers 里一条带
+  //   api_key 的凭证——即本文件未注释掉的部分，把 api_key 换成真的就能跑。
+  // 【常用进阶】reasoning_effort、providers.models、roles 按角色分模型。
+  // 【其余字段】全部可省略，缺省值见各字段注释，不懂就不要加。
+  //
+  // 加载与合并：~/.ainovel/config.json（基底）→ ./.ainovel/config.json →
+  // --config 指定文件，逐层合并：标量/map 字段按"非零值覆盖"——上层只能
+  // 覆盖，不能复位/清除下层已设的值（例如想清掉全局的 reasoning_effort，
+  // 只能改全局文件）；budget/notify 为整块覆盖。
+  // 运行时用 /model 面板切换模型/编辑凭证会写回全局 ~/.ainovel/config.json。
+  // ════════════════════════════════════════════════════════════════
+
   // 默认使用的 provider、model 和推理强度。
   // ★ provider 的值是下面 providers 里的一个 key 名（一根“指针”），不是协议名——
   //   改 provider 必须保证 providers 里有同名条目，否则启动会报“未配置凭证”。
-  //   运行时用 /model 面板切换会写回全局配置 ~/.ainovel/config.json。
+  // model：模型全名，原样透传给 API（如 google/gemini-2.5-flash、claude-sonnet-4、qwen3:14b）。
   "provider": "openrouter",
   "model": "google/gemini-2.5-flash",
   // 可选。默认推理强度：off / low / medium / high / xhigh / max。
   // 省略或空字符串 = 不覆盖，沿用模型/provider 默认。
+  // 继承链：roles.<角色>.reasoning_effort → 这里的顶层值 → 模型/provider 默认。
+  // 模型不支持所配档位时自动降到最近可用档。
   "reasoning_effort": "medium",
 
-  // Provider 凭证库。key 自定义，用作上面 provider 字段引用的目标。
-  // 已知 provider（openai/anthropic/gemini/openrouter/deepseek/qwen/glm/grok/mimo/ollama/bedrock）
-  // 可省略 type；自定义代理必须显式声明 type 指明 API 协议。
+  // Provider 凭证库。key 自定义（如 "openrouter"、"我的中转"），
+  // 供顶层 provider 和 roles.*.provider 引用。
+  // 每条字段：
+  //   type       可选。API 协议：openai / anthropic / gemini。
+  //              已知 provider（openai/anthropic/gemini/openrouter/deepseek/qwen/glm/
+  //              grok/mimo/ollama/bedrock）按 key 名自动识别可省略；自定义代理必须显式声明。
+  //   api_key    凭证。ollama / bedrock / 显式 type 的自定义代理可省略。
+  //   base_url   可选。API 地址；省略=该 provider 官方地址。OpenAI 协议一般需要带 /v1，
+  //              anthropic / gemini 协议不带。
+  //   models     可选。/model 面板的候选模型列表；省略时回退到配置中已出现过的
+  //              同 provider 模型。面板里也可随时按 a 添加。
+  //   api        可选。仅 OpenAI 协议：endpoint 用 chat（默认 /v1/chat/completions）
+  //              还是 responses（/v1/responses）。Codex 类代理通常需要 responses。
+  //   extra_body 可选。逐字并入每次请求体的额外参数（temperature/top_p/min_p 或厂商
+  //              特有键），仅 OpenAI 兼容类 provider 生效；值由用户自负其责。
+  //   extra      可选。HTTP 客户端层选项（user_agent / headers / anthropic_beta），
+  //              用于需要伪装客户端身份的代理——与 extra_body（请求体）不是一层。
+  //   stream_idle_timeout 可选。流式空闲看门狗（Go duration 如 "900s"/"15m"，默认 "5m"）：
+  //              超过该时长收不到任何 chunk 即断流。LocalAI/ollama 等本地慢推理
+  //              首块可超 5 分钟，按 provider 放宽，不影响其它通道。
   "providers": {
     "openrouter": {
       "api_key": "sk-or-v1-xxx",
       "base_url": "https://openrouter.ai/api/v1",
-      // 可选。声明 /model 面板候选；省略时回退到配置中已出现过的同 provider 模型。
       "models": ["google/gemini-3.0-flash", "google/gemini-3.1-pro"],
-      // 可选。透传给该 provider 每次请求的额外参数（采样参数如 temperature/top_p/
-      // min_p，或厂商特有键如 nvidia 开 think 的 chat_template_kwargs），逐字并入请求体。
-      // 仅对 OpenAI 兼容类 provider 生效（openrouter/deepseek/qwen/glm/grok/ollama…）；
-      // type:"openai" 会按官方参数白名单过滤。值由用户自负其责。
+      // extra_body 示例：采样参数逐字并入请求体。
+      // type:"openai" 会按官方参数白名单过滤。
       "extra_body": { "temperature": 0.8, "min_p": 0.05 },
-      // 可选。provider 级配置，透传给 HTTP 客户端层（不是请求体），用于需要
-      // 自定义 User-Agent / headers / anthropic_beta 的代理。
+      // extra 示例：自定义 User-Agent / 额外请求头。
       "extra": {
         "user_agent": "my-client/1.0",
         "headers": { "X-Custom-Client": "my-client" }
@@ -43,8 +69,7 @@
       // base_url 需带 /v1（ollama 的 OpenAI 兼容端点在 /v1 下）
       "base_url": "http://localhost:11434/v1",
       "models": ["qwen3:14b"],
-      // 可选。流式空闲看门狗（Go duration，默认 "5m"）：LocalAI/ollama 等
-      // 本地慢推理首块可超 5 分钟，按 provider 放宽，不影响其它通道
+      // 本地慢推理放宽看门狗（默认 5m 可能误杀首块）
       "stream_idle_timeout": "15m"
     },
     "claude-code-proxy": {
@@ -73,8 +98,7 @@
       "api_key": "sk-xxx",
       "base_url": "https://proxy.example.com/v1",
       "models": ["gpt-5.4", "gpt-5.4-mini", "MiniMax-M3"],
-      // 可选。OpenAI 协议 endpoint：chat（默认 /v1/chat/completions）/
-      // responses（/v1/responses）。Codex 类代理通常需要 responses。
+      // Codex 类代理通常需要 responses endpoint。
       "api": "responses",
       "extra": {
         // 可选。缓存路由键 prompt_cache_key 默认只发给官方 api.openai.com——
@@ -93,9 +117,11 @@
   },
 
   // 可选。按角色覆盖默认模型；未配的角色使用上面的 model。
-  // reasoning_effort 也可按角色覆盖；未配时继承顶层 reasoning_effort。
-  // 角色：architect / writer / editor。fallbacks 在主模型失败时按序尝试。
-  // 注意：这里的 provider 同样是“指针”，必须指向 providers 里存在的 key。
+  // 三个角色：architect=规划（书名/大纲/角色设定）、writer=写作（章节正文）、
+  // editor=评审（打分/改写意见）。常见用法：写作用强模型，规划/评审用便宜模型。
+  // roles.*.provider 同样是“指针”，必须指向 providers 里存在的 key。
+  // roles.*.reasoning_effort 取值同顶层，省略时继承顶层 reasoning_effort。
+  // fallbacks：主模型限流/超时/断流/网络错误时按序尝试的备用 provider/model。
   // "roles": {
   //   "writer": {
   //     "provider": "anthropic",
@@ -107,6 +133,8 @@
   // },
 
   // 写作风格：default / suspense / fantasy / romance。
+  // 自定义风格：把 <名字>.md 放进 ~/.ainovel/style/ 或 <书目录>/style/，
+  // 文件名（小写字母/数字/连字符）即这里可填的取值，详见 docs/voice-layer.md。
   "style": "default"
 
   // 可选。显式指定上下文压缩使用的窗口大小。省略 / 0 = 按模型名自动解析
@@ -115,9 +143,18 @@
   // 避免在注意力衰退区才压缩。仅影响压缩阈值，不改变 API 实际请求长度。
   // "context_window": 300000
 
-  // 可选。单本书（output 目录）的成本预算，挂机保险丝。book_usd > 0 才启用。
-  // 累计花费达到 warn_ratio 时告警不停机；达到 100% 在当前子代理任务结束后
-  // 优雅停机（hard_stop=true 则越线立即停）。停机后上调 book_usd 即可恢复续跑。
+  // 可选。按模型名分别指定窗口（键名与模型名逐字一致）——多个模型窗口各不相同
+  // 时用它；只有一个模型要钉值时用上面的 context_window 即可。
+  // 优先级：context_windows[模型名] > 顶层 context_window > registry > 200k 兜底。
+  // 典型场景：自定义模型实际窗口 256K 但 registry 识别不到，默认按 200K 提前压缩：
+  // "context_windows": { "my-256k-model": 256000 },
+  // /model 面板重命名/删除模型时，这里的键会跟着迁移/清除。
+
+  // 可选。单本书（output 目录）的成本预算，挂机保险丝。
+  //   book_usd   预算上限（美元），> 0 才启用；0/缺省 = 不限。
+  //   warn_ratio 告警水位，默认 0.8：累计花费达到该比例时告警不停机。
+  //   hard_stop  默认 false：花费达到 100% 时等当前子代理任务结束后优雅停机；
+  //              true = 越线立即停。停机后上调 book_usd 即可恢复续跑。
   // 注意：自定义模型若注册表查不到价格且 provider 不自报 cost，预算形同虚设。
   // "budget": {
   //   "book_usd": 50,
@@ -126,11 +163,13 @@
   // },
 
   // 可选。无人值守告警，缺省启用（Windows 通知 / macOS osascript / Linux notify-send）。
-  // 配置 command 后改走自定义命令（手机推送走这里）：字段经环境变量
-  // NOTIFY_TITLE / NOTIFY_BODY / NOTIFY_KIND / NOTIFY_LEVEL 通过环境变量传入，完整 JSON 同时写 stdin。
-  // Unix shell 用 $NOTIFY_TITLE；Windows PowerShell 用 $env:NOTIFY_TITLE。
-  // events 可选过滤：run_end / budget / advance_gate / stop_guard /
-  // plan_start / deadlock / worker_failure；缺省全部开启。
+  //   enabled  缺省 true；设 false 关闭全部告警。
+  //   command  可选。配置后改走自定义命令（手机推送走这里）：字段经环境变量
+  //            NOTIFY_TITLE / NOTIFY_BODY / NOTIFY_KIND / NOTIFY_LEVEL 传入，
+  //            完整 JSON 同时写 stdin。Unix shell 用 $NOTIFY_TITLE；
+  //            Windows PowerShell 用 $env:NOTIFY_TITLE。
+  //   events   可选。按事件类型过滤：run_end / budget / advance_gate / stop_guard /
+  //            plan_start / deadlock / worker_failure；缺省全部开启。
   // "notify": {
   //   "enabled": true,
   //   // 标题/正文含中文与空格，必须经 --data-urlencode 传参，不可拼进 URL 路径或 HTTP 头。

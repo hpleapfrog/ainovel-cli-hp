@@ -152,6 +152,16 @@ func mergeConfig(base, overlay Config) Config {
 		base.ContextWindow = overlay.ContextWindow
 	}
 
+	// ContextWindows: overlay 的 key 覆盖 base 同名 key（与 providers/roles 一致）
+	if len(overlay.ContextWindows) > 0 {
+		if base.ContextWindows == nil {
+			base.ContextWindows = make(map[string]int)
+		}
+		for k, v := range overlay.ContextWindows {
+			base.ContextWindows[k] = v
+		}
+	}
+
 	// Providers: overlay 的 key 覆盖 base 同名 key
 	if len(overlay.Providers) > 0 {
 		if base.Providers == nil {

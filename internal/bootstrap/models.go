@@ -100,8 +100,8 @@ func (m *SwappableModel) Current() (provider, name string) {
 // ModelSet 持有按角色分配的模型实例，未配置的角色回退到默认模型。
 type ModelSet struct {
 	Default *SwappableModel
-	// mu 保护 models map：TUI 运行中切角色模型（Swap）与 ForRole 等读路径并发。
-	// fallbacks 与 config 仅在 NewModelSet 写入、之后只读，无需锁保护。
+	// mu 保护 models map 与 config：TUI 运行中切角色模型（Swap）、编辑 provider 后
+	// 刷新配置（SyncConfig）与 ForRole 等读路径并发。fallbacks 仅在 NewModelSet 写入、之后只读。
 	mu        sync.RWMutex
 	models    map[string]*SwappableModel
 	fallbacks map[string][]modelTarget
@@ -177,7 +177,9 @@ func (ms *ModelSet) CurrentSelection(role string) (provider, model string, expli
 // Swap 切换默认模型或指定角色模型。
 // role 为空或 "default" 时切换默认模型；其他角色切换为显式覆盖。
 func (ms *ModelSet) Swap(role, provider, model string) error {
+	ms.mu.RLock()
 	pc, ok := ms.config.Providers[provider]
+	ms.mu.RUnlock()
 	if !ok {
 		return fmt.Errorf("provider %q is not configured: %w", provider, errs.ErrConfig)
 	}
@@ -203,6 +205,15 @@ func (ms *ModelSet) Swap(role, provider, model string) error {
 	}
 	ms.models[role] = NewSwappableModel(provider, model, next)
 	return nil
+}
+
+// SyncConfig 刷新内部保存的配置副本。
+// 运行中编辑 provider 凭证 / 新增 provider / 重命名模型后，Host 会用最新配置
+// 触发全量 Swap 重建客户端；此处保证 Swap 读到的 provider 配置与落盘一致。
+func (ms *ModelSet) SyncConfig(cfg Config) {
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+	ms.config = cfg
 }
 
 // ModelName 从 ChatModel 中提取当前模型名，失败返回空字符串。

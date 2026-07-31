@@ -333,3 +333,21 @@ func TestSaveConfig_AtomicOverwrite(t *testing.T) {
 		t.Fatalf("原子写不应留 tmp 残留: %v", leftovers)
 	}
 }
+
+func TestMergeConfig_ContextWindows(t *testing.T) {
+	base := Config{
+		ContextWindow:  300000,
+		ContextWindows: map[string]int{"m1": 256000, "m2": 128000},
+	}
+	overlay := Config{
+		ContextWindows: map[string]int{"m2": 200000, "m3": 512000},
+	}
+	got := mergeConfig(base, overlay)
+	// 同名 key 覆盖、新 key 追加、未提及 key 保留
+	if got.ContextWindows["m1"] != 256000 || got.ContextWindows["m2"] != 200000 || got.ContextWindows["m3"] != 512000 {
+		t.Fatalf("context_windows 应按 key 合并, got %v", got.ContextWindows)
+	}
+	if got.ContextWindow != 300000 {
+		t.Fatalf("overlay 未设 context_window 时保留 base, got %d", got.ContextWindow)
+	}
+}
