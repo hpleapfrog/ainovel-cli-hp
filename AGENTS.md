@@ -56,7 +56,7 @@ CLI 子命令：`version`/`--version`、`update [版本]`（自更新，从 GitH
 | `internal/store` | 文件系统持久化：progress、outline、checkpoints、decisions、cast、session 等 |
 | `internal/models` | 模型注册表与定价；`models_generated.go` 由 `go generate` 生成 |
 | `internal/rules` | 写作规则（去 AI 味）加载/lint/快照；`internal/userrules` 为用户规则运行时 |
-| `internal/diag` | `/diag` 诊断：快照、规则检查、脱敏导出 |
+| `internal/diag` | `/diag` 诊断：快照、规则检查、脱敏导出；事实层损坏（状态机/返工队列/孤立 steer）可在报告中按 `f` 自动修复（`repair.go`） |
 | `internal/eval` | 离线评测 harness：`ainovel-cli eval --cases ...` |
 | `internal/version` | 版本信息解析与自更新 |
 | `assets/` | 嵌入的提示词、参考文档、风格预设；经 `//go:embed`（`assets/load.go`）编译进二进制 |
@@ -137,5 +137,5 @@ CLI 子命令：`version`/`--version`、`update [版本]`（自更新，从 GitH
 - internal/rules/    机械规则（SystemDefaults 基线、checker、快照合并）
 - internal/userrules/ 用户自然语言规则归一化（~/.ainovel/rules/*.md → meta/user_rules.json）
 - internal/tools/    Worker 工具（novel_context / plan / draft / check / commit / save_review ...）
-- internal/diag/     /diag 诊断规则（rules_flow / rules_quality / rules_planning / rules_context）
+- internal/diag/     /diag 诊断规则（rules_flow / rules_quality / rules_planning / rules_context）+ 自动修复（repair.go，报告中按 f 触发，只修事实层）
 - internal/eval + evals/  离线 A/B 评测（用法见 docs/evaluation-system.md）

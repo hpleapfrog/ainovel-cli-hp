@@ -29,6 +29,10 @@ type (
 		exportPath string // 脱敏诊断文件绝对路径；空 = 导出失败
 		finishedAt time.Time
 	}
+	repairDoneMsg struct {
+		reqID   int
+		results []diag.RepairResult
+	}
 	askUserMsg       askUserRequest
 	startResultMsg   struct{ err error }
 	cocreateDeltaMsg struct {
@@ -240,6 +244,15 @@ func loadReport(dir string, reqID int) tea.Cmd {
 			exportPath: exportPath,
 			finishedAt: time.Now(),
 		}
+	}
+}
+
+// repairFindings 对诊断发现执行自动修复（事实层、确定性项）。
+// 调用方须保证引擎不在运行中——修复直接改 progress.json/run.json，不能与引擎并发。
+func repairFindings(dir string, reqID int, findings []diag.Finding) tea.Cmd {
+	return func() tea.Msg {
+		s := store.NewStore(dir)
+		return repairDoneMsg{reqID: reqID, results: diag.Repair(s, findings)}
 	}
 }
 

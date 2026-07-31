@@ -20,6 +20,8 @@ type reportState struct {
 	renderW    int
 	startedAt  time.Time
 	finishedAt time.Time
+	repairs    []diag.RepairResult // 最近一次按 f 自动修复的结果，渲染在报告顶部
+	notice     string              // 面板内一次性提示（如运行中禁止修复）
 	viewport   viewport.Model
 }
 
@@ -51,7 +53,7 @@ func (s *reportState) setContent(contentW int) {
 	case s.loading:
 		s.viewport.SetContent(renderReportLoadingText(contentW, s.startedAt))
 	case s.report != nil:
-		s.viewport.SetContent(renderReportText(*s.report, contentW, s.exportPath, s.startedAt, s.finishedAt))
+		s.viewport.SetContent(renderReportText(*s.report, contentW, s.exportPath, s.startedAt, s.finishedAt, s.repairs, s.notice))
 	default:
 		s.viewport.SetContent("诊断报告不可用")
 	}
@@ -72,7 +74,7 @@ func reportModalSize(termW, termH int) (int, int) {
 	return w, h
 }
 
-func renderReportText(report diag.Report, width int, exportPath string, startedAt, finishedAt time.Time) string {
+func renderReportText(report diag.Report, width int, exportPath string, startedAt, finishedAt time.Time, repairs []diag.RepairResult, notice string) string {
 	var b strings.Builder
 	st := report.Stats
 
@@ -80,6 +82,29 @@ func renderReportText(report diag.Report, width int, exportPath string, startedA
 	titleStyle := lipgloss.NewStyle().Foreground(colorAccent).Bold(true)
 	dimStyle := lipgloss.NewStyle().Foreground(colorDim)
 	mutedStyle := lipgloss.NewStyle().Foreground(colorMuted)
+
+	// 面板内一次性提示（如运行中禁止修复）
+	if notice != "" {
+		b.WriteString(lipgloss.NewStyle().Foreground(colorReview).Render(wrapText(notice, width)))
+		b.WriteString("\n\n")
+	}
+
+	// 自动修复结果（按 f 后重跑诊断，修复项应已从下方发现列表消失）
+	if len(repairs) > 0 {
+		okStyle := lipgloss.NewStyle().Foreground(colorSuccess)
+		errStyle := lipgloss.NewStyle().Foreground(colorError)
+		b.WriteString(titleStyle.Render("修复结果"))
+		b.WriteString("\n")
+		for _, r := range repairs {
+			if r.Err != nil {
+				b.WriteString(errStyle.Render("✗ " + r.Rule + ": " + r.Summary + " - " + r.Err.Error()))
+			} else {
+				b.WriteString(okStyle.Render("✓ " + r.Rule + ": " + r.Summary))
+			}
+			b.WriteString("\n")
+		}
+		b.WriteString("\n")
+	}
 
 	// 脱敏诊断已导出 → 引导用户贴 issue
 	if exportPath != "" {
@@ -335,11 +360,17 @@ func renderReportModal(width, height int, state *reportState) string {
 		state.setContent(contentW)
 	}
 
+	footer := "  ↑↓ 滚动 · Esc 关闭"
+	if state.report != nil {
+		if n := len(diag.Repairable(state.report.Findings)); n > 0 {
+			footer = fmt.Sprintf("  ↑↓ 滚动 · f 自动修复 %d 项 · Esc 关闭", n)
+		}
+	}
 	modal := renderPaddedModalFrame(
 		boxW,
 		boxH,
 		"诊断报告",
-		"  ↑↓ 滚动 · Esc 关闭",
+		footer,
 		strings.Split(state.viewport.View(), "\n"),
 	)
 	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, modal)
@@ -365,7 +396,29 @@ func (m Model) handleReportKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyPgDown:
 		m.report.viewport.HalfPageDown()
 		return m, nil
+	case tea.KeyRunes:
+		return m.handleReportRepairKey(msg)
 	default:
 		return m, nil
 	}
+}
+
+// handleReportRepairKey 处理报告面板的 f 键：对可自动修复项执行修复。
+// 修复直接改写 progress.json/run.json，运行中禁止（避免与引擎并发写）。
+func (m Model) handleReportRepairKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if len(msg.Runes) == 0 || msg.Runes[0] != 'f' || m.report.report == nil {
+		return m, nil
+	}
+	repairable := diag.Repairable(m.report.report.Findings)
+	if len(repairable) == 0 {
+		return m, nil
+	}
+	if m.snapshot.RuntimeState == "running" {
+		m.report.notice = "运行中不可自动修复：请先停止创作，再打开 /diag 按 f 修复。"
+		m.report.setContent(m.report.renderW)
+		return m, nil
+	}
+	m.report.notice = "正在自动修复..."
+	m.report.setContent(m.report.renderW)
+	return m, repairFindings(m.runtime.Dir(), m.report.reqID, m.report.report.Findings)
 }

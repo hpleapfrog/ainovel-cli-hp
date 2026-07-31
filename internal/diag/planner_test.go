@@ -84,14 +84,16 @@ func TestInvalidPendingRewritesMeta(t *testing.T) {
 		t.Fatalf("expected 1 finding, got %d", len(findings))
 	}
 	f := findings[0]
-	if f.Severity != SevCritical || f.Confidence != ConfHigh || f.AutoLevel != AutoSuggest {
-		t.Fatalf("expected critical/high/suggest, got %s/%s/%s", f.Severity, f.Confidence, f.AutoLevel)
+	if f.Severity != SevCritical || f.Confidence != ConfHigh || f.AutoLevel != AutoSafe {
+		t.Fatalf("expected critical/high/safe, got %s/%s/%s", f.Severity, f.Confidence, f.AutoLevel)
 	}
 	if f.Rule != "InvalidPendingRewrites" {
 		t.Fatalf("unexpected rule: %s", f.Rule)
 	}
+	// AutoSafe 但不产出 Action：修复走 /diag 报告按 f 的 Repair 路径，
+	// 不走 PlanActions 的 notice/follow-up 体系。
 	if actions := PlanActions(findings); len(actions) != 0 {
-		t.Fatalf("invalid pending rewrites should not auto-plan actions yet, got %+v", actions)
+		t.Fatalf("invalid pending rewrites should not auto-plan actions, got %+v", actions)
 	}
 }
 

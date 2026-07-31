@@ -498,6 +498,14 @@ func (m Model) handleRuntimeMsg(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 		boxW, _ := reportModalSize(m.width, m.height)
 		m.report.load(msg.report, paddedModalContentWidth(boxW), msg.exportPath, msg.finishedAt)
 		return m, nil, true
+	case repairDoneMsg:
+		if m.report == nil || msg.reqID != m.report.reqID {
+			return m, nil, true
+		}
+		m.report.repairs = msg.results
+		m.report.notice = ""
+		// 修复后重跑诊断刷新报告；load 保留 repairs，渲染在报告顶部。
+		return m, loadReport(m.runtime.Dir(), msg.reqID), true
 	case importEventMsg:
 		if m.importer == nil || msg.reqID != m.importer.reqID {
 			return m, nil, true

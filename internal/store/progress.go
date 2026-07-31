@@ -309,6 +309,23 @@ func (s *ProgressStore) SetFlow(flow domain.FlowState) error {
 	})
 }
 
+// ForceFlow 强制写入流程状态，跳过转移校验。
+// 仅供 diag 自动修复使用：状态机已损坏时（如 phase/flow 不匹配）可能不存在
+// 合法转移路径，正常 SetFlow 会被 ValidateFlowTransition 拒绝，无法用于复位。
+func (s *ProgressStore) ForceFlow(flow domain.FlowState) error {
+	return s.io.WithWriteLock(func() error {
+		p, err := s.loadUnlocked()
+		if err != nil {
+			return err
+		}
+		if p == nil {
+			return nil
+		}
+		p.Flow = flow
+		return s.saveUnlocked(p)
+	})
+}
+
 // SetPendingRewrites 设置待重写章节队列和原因。
 // PendingRewrites 只允许包含已完成章节；未完成章节还没有终稿，不能进入重写/打磨队列。
 func (s *ProgressStore) SetPendingRewrites(chapters []int, reason string) error {
@@ -390,6 +407,25 @@ func (s *ProgressStore) ClearPendingRewrites() error {
 		if err := domain.ValidateFlowTransition(p.Flow, domain.FlowWriting); err != nil {
 			return err
 		}
+		p.Flow = domain.FlowWriting
+		return s.saveUnlocked(p)
+	})
+}
+
+// ForceResetRewrites 强制清空返工队列、清除重写原因并复位 flow=writing，
+// 跳过转移校验。仅供 diag 自动修复使用：flow 值本身损坏（未知状态）时
+// ClearPendingRewrites 的转移校验会失败，队列与 flow 都无法复位。
+func (s *ProgressStore) ForceResetRewrites() error {
+	return s.io.WithWriteLock(func() error {
+		p, err := s.loadUnlocked()
+		if err != nil {
+			return err
+		}
+		if p == nil {
+			return nil
+		}
+		p.PendingRewrites = nil
+		p.RewriteReason = ""
 		p.Flow = domain.FlowWriting
 		return s.saveUnlocked(p)
 	})

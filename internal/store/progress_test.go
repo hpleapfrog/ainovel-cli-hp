@@ -246,3 +246,47 @@ func TestClearPendingRewrites(t *testing.T) {
 		t.Errorf("flow should be writing, got %s", p.Flow)
 	}
 }
+
+func TestForceFlowSkipsTransitionValidation(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStore(dir)
+	_ = store.Progress.Init("test", 10)
+	_ = store.Progress.SetFlow(domain.FlowRewriting)
+
+	// 正常路径拒绝非法转移（rewriting → reviewing）。
+	if err := store.Progress.SetFlow(domain.FlowReviewing); err == nil {
+		t.Fatal("expected SetFlow to reject invalid transition")
+	}
+	// ForceFlow 跳过校验，且能写空值（复位初始态）。
+	if err := store.Progress.ForceFlow(""); err != nil {
+		t.Fatalf("ForceFlow: %v", err)
+	}
+	p, _ := store.Progress.Load()
+	if p.Flow != "" {
+		t.Errorf("expected empty flow, got %s", p.Flow)
+	}
+}
+
+func TestForceResetRewritesWithCorruptFlow(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStore(dir)
+	_ = store.Progress.Init("test", 10)
+	_ = store.Progress.MarkChapterComplete(1, 3000, "", "")
+	_ = store.Progress.SetPendingRewrites([]int{1}, "测试")
+	// 制造损坏的 flow 值：正常 ClearPendingRewrites 的转移校验会失败。
+	_ = store.Progress.ForceFlow("garbage")
+
+	if err := store.Progress.ClearPendingRewrites(); err == nil {
+		t.Fatal("expected ClearPendingRewrites to fail on corrupt flow")
+	}
+	if err := store.Progress.ForceResetRewrites(); err != nil {
+		t.Fatalf("ForceResetRewrites: %v", err)
+	}
+	p, _ := store.Progress.Load()
+	if len(p.PendingRewrites) != 0 || p.RewriteReason != "" {
+		t.Errorf("queue/reason should be cleared, got %v/%q", p.PendingRewrites, p.RewriteReason)
+	}
+	if p.Flow != domain.FlowWriting {
+		t.Errorf("flow should be writing, got %s", p.Flow)
+	}
+}

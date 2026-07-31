@@ -33,11 +33,11 @@ func InvalidPendingRewrites(snap *Snapshot) []Finding {
 		Category:   CatFlow,
 		Severity:   SevCritical,
 		Confidence: ConfHigh,
-		AutoLevel:  AutoSuggest,
+		AutoLevel:  AutoSafe,
 		Target:     "meta/progress.json",
 		Title:      fmt.Sprintf("返工队列包含未完成章节: [%s]", intsToStr(invalid)),
 		Evidence:   fmt.Sprintf("pending_rewrites=[%s], completed_chapters=[%s], flow=%s", intsToStr(p.PendingRewrites), intsToStr(completed), p.Flow),
-		Suggestion: "这是状态不变量损坏。请停止运行后编辑 meta/progress.json，移除 pending_rewrites 中未完成章节；若队列为空，将 flow 改为 writing 并清空 rewrite_reason。",
+		Suggestion: "这是状态不变量损坏，可在 /diag 报告中按 f 自动修复（剔除未完成章节；队列排空时复位 flow=writing 并清空 rewrite_reason）。",
 	}}
 }
 
@@ -85,7 +85,7 @@ func OrphanedSteer(snap *Snapshot) []Finding {
 		Target:     "runtime.recovery",
 		Title:      "存在未消费的转向指令",
 		Evidence:   fmt.Sprintf("pending_steer=%q, flow=%s", truncStr(snap.RunMeta.PendingSteer, 60), flowStr(snap.Progress)),
-		Suggestion: "该 steer 被持久化但未被干预裁定流程消费。检查中断恢复逻辑，或通过重新提交覆盖。",
+		Suggestion: "该 steer 被持久化但未被干预裁定流程消费，可在 /diag 报告中按 f 自动修复（清除 pending_steer）；也可重新提交覆盖。",
 	}}
 }
 
@@ -110,7 +110,7 @@ func PhaseFlowMismatch(snap *Snapshot) []Finding {
 		Target:     "runtime.flow",
 		Title:      fmt.Sprintf("阶段/流程状态不匹配: phase=%s, flow=%s", p.Phase, p.Flow),
 		Evidence:   fmt.Sprintf("phase=%s 不应出现非初始 flow=%s", p.Phase, p.Flow),
-		Suggestion: "状态机可能损坏，需手动检查 meta/progress.json 的 phase 和 flow 字段。",
+		Suggestion: "状态机已损坏，可在 /diag 报告中按 f 自动修复（flow 复位为初始态）；或手动检查 meta/progress.json 的 phase 和 flow 字段。",
 	}}
 }
 
