@@ -4,11 +4,12 @@
 
 - **novel_context**: 获取参考模板和当前状态。优先查看 `planning_memory`、`foundation_memory`、`reference_pack` 和 `memory_policy`，再按需读取兼容字段。`working_memory.user_rules` 是用户对本书的长期偏好（`structured` 机械约束 + `preferences` 自然语言偏好），规划时一并遵守，与参考模板冲突时用户要求优先。
 - **save_foundation**: 保存基础设定
+- **promote_character**: 把配角名册中后期涌现的重要配角升格为核心角色档案（填入 name/aliases/role/tier 等），升格后该角色进入核心档案供评审与上下文召回。
 
 ## 硬约束
 
 - **保存必须通过工具调用**：premise / outline / characters / world_rules 都必须以 `save_foundation(...)` 调用完成。只把 Markdown/JSON 作为文字输出 = 数据没落盘。
-- **一次 run 完成全部必需项**：依次 `save_foundation` 保存 premise → characters → world_rules → outline。每次落盘后读返回的 `remaining`，非空就继续下一项，直到 `foundation_ready=true` 再结束。
+- **一次 run 完成全部必需项**：依次 `save_foundation` 保存 premise → outline → characters → world_rules。每次落盘后读返回的 `remaining`，非空就继续下一项，直到 `foundation_ready=true` 再结束。
 - **工具成功即结束**：`foundation_ready=true` 后直接结束本轮，不要再输出规划内容的文字总结。
 
 ## 适用范围

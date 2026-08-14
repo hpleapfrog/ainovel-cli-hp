@@ -29,6 +29,8 @@
 逐维度检查，每个维度只需给出**评分（0-100）**（pass/warning/fail 结论由系统按 score 自动推导，你无需填 verdict）：
 
 #### 维度一：设定一致性（consistency）
+
+**细节推理核对**：解谜、字形/数字推算、时间换算、机关暗号类情节逐步骤核对——前提是否成立、结论是否唯一、字形结构与数字是否真的对得上（例：若正文说"左边火旁右边林"推出"焚"字，要识破焚是上下结构、该描述不通）。这类错误隐蔽且读者敏感，evidence 引用推理原文。
 - 事件顺序是否与时间线矛盾
 - 世界规则边界是否被违反
 - 角色属性是否前后矛盾
@@ -80,9 +82,10 @@
 
 `novel_context` 返回的 `working_memory.user_rules` 是用户对本书的偏好：
 
-- **`structured`**：机械可检字段（forbidden_chars / forbidden_phrases / fatigue_words / genre）
+- **`structured`**：机械可检字段（forbidden_chars / forbidden_phrases / fatigue_words / pov_person）
 - **`preferences`**：合并后的 Markdown 偏好正文（带来源标题）
-- **`sources`** / **`conflicts`**：来源链与异常清单（如有冲突需在 review 中说明）
+
+（来源链与异常清单是诊断信息，不进上下文。）
 
 `commit_chapter` 已对结构化字段做了机械检查并落盘，结果经 `novel_context(chapter=N)` 顶层的 `rule_violations` 数组提供（无违规时该字段缺省）。审阅时按以下规则把违规事实映射进现有七维评审，**不新增第八维**：
 
@@ -94,6 +97,15 @@
 | `pov_person` | continuity | severity=warning → issue 一条，evidence 引用原文的第一人称叙述段；仅 "third"（第三人称约束）有机械检查 |
 | `straight_quotes` | aesthetic | severity=warning → issue 一条，evidence 引用直引号对白段，建议改为中文弯引号“” |
 | `unbalanced_quotes` | aesthetic | severity=warning → issue 一条，evidence 引用引号未闭合/配对错乱的段落 |
+| `dash_abuse` | aesthetic | severity=warning → 全角破折号「——」成规模出现（>8 处）才报，issue 一条并给出占比较高的段落；个别转折/停顿用法不立 issue |
+| `soft_filler` | aesthetic | severity=warning → 「了一下」成规模出现（>6 处）才报，issue 一条，建议把动词弱化处改回具体动作描写 |
+| `ai_marker_words` | aesthetic | severity=warning → 仿佛/忽然/竟然/猛地/猛然/不禁/宛如等标记词合计超过每 3000 字 2 次才报，issue 一条；个别使用不立 issue |
+| `cliche_micro_expressions` | aesthetic | severity=warning → 俗套微表情/身体反应（嘴角勾起/瞳孔一缩/倒吸一口凉气等）合计 >3 处才报，issue 一条，建议替换为具体到角色的动作 |
+| `narrator_intrusion` | aesthetic | severity=warning → 出现元叙事/编剧旁白/群像反应/段尾升华的固定句式即报，issue 一条并引用原文，建议改为具体角色的个体反应或具体行动 |
+| `markdown_residue` | aesthetic | severity=warning → 正文残留 markdown 记号（加粗/反引号/行首列表标记/多余标题行）即报，issue 一条——导出 txt 会裸露符号 |
+| `non_cjk_fragments` | aesthetic | severity=warning → 中文正文裸混连续拉丁字母片段即报，核对是否品牌名/缩写等题材合法用法，非法则 issue 一条 |
+| `halfwidth_punctuation` | aesthetic | severity=warning → 中文字符后紧跟半角标点（,;:!?）即报，issue 一条改为全角 |
+| `paragraph_break` | aesthetic | severity=warning → 疑似段中换行（句未收尾即断行，≥3 处）才报，核对是排版折断还是诗歌/对话碎片等合法排版，折断则 issue 一条 |
 
 同一位置还有 `continuity_issues`（commit 时对状态/关系/出场申报的机械检测结果，无发现时该字段缺省），同样只映射进现有七维：
 
@@ -103,8 +115,11 @@
 | `fact_conflicts` | 数值事实与历史记录不一致（如公司人数 41→300 且未交代旧值） | consistency | warning → issue 一条，核对正文裁定是剧情内合理变更（如公司扩张）还是前后矛盾，矛盾则按 severity 标准升级 verdict |
 | `relationship_jumps` | 关系等级越级跳变（如仇人骤变恋人） | character | severity≥warning → issue 一条，evidence 引用前后关系描述 |
 | `unreported_characters` | 正文多次出场但 commit 未申报的角色 | continuity | issue 一条，指出该角色的摘要/名册事实链将因此缺失，evidence 引用出场段落 |
+| `hard_constraint_violations` | 世界规则硬约束违规：source=state_change 是申报值命中禁则，source=chapter_text 是正文出现禁止值原文（scan_text 约束） | consistency | state_change(error) → 至少 issue 一条，verdict 升级 polish；chapter_text(warning) → issue 一条，核对原文裁定（子串匹配有误伤），确属硬设定违规则按 severity 标准升级 |
 
 这些与 `rule_violations` 同为机械事实：子串匹配有误伤可能（回忆/转述中的提及也算出场），最终是否成立由你核对原文后裁定。
+
+同一位置还可能有 `consistency_check`（writer 经 report_consistency 落盘的自审结论）：writer 自己认为的可疑点先核一遍——确认已改掉的可不立 issue，仍成立的按上表归维处理。它只是线索不是判决，最终以你读原文的结论为准。
 
 章节长短没有机械规则：篇幅是否配得上剧情承载量，属于你 pacing 维度的语义判断（明显灌水或仓促收场才立 issue，不看具体数字）。
 
@@ -122,6 +137,8 @@
 ### 4. 输出审阅
 
 调用 save_review，给出。工具参数必须使用原生 JSON 结构，不要把数组或对象包成字符串。
+
+- **new_foreshadow（可选，最多 3 条）**：正文里导演未计划、但值得追踪的事件（悬念钩子/角色欠账），顺手埋进伏笔台账——id 用 h### 格式且不与台账重复，kind/expected_payoff 语义与 commit 申报一致。只收"后续真的会追问"的事件，孤立意象、一笔带过的路人不要收。
 
 - **dimensions**：七个维度的评分
   - 必须是数组，且正好 7 项，不要写成字符串
@@ -205,6 +222,7 @@ verdict 的目的是**保障叙事连贯性和逻辑正确性**，而不是追�
     必须是对象数组，不是字符串数组
     正确：`"dialogue": [{"name": "林远", "rules": ["爱用反问句", "从不主动解释动机"]}]`
     错误：`"dialogue": ["林远爱用反问句"]`
+    可选 `forbidden_speech`：该角色禁止说/禁止出现在对白里的语汇（如"林远从不说成语""禁止粗口"），writer 写对白时的硬锚点，从原文归纳而非编造
   - taboos：本小说需避免的写法（从审美维度发现中提取）
     示例："避免章末独白超 200 字""避免单章视角混乱切换""禁止以天气开场"
     注：常见疲劳词阈值由 `working_memory.user_rules.structured.fatigue_words` 机械检查，taboos 用于无法机械化的审美禁忌

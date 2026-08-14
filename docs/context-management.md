@@ -10,21 +10,25 @@
 
 目标不是介绍抽象概念，而是让后续维护者打开这一份文档，就能快速理解当前实现和排障入口。
 
+> 注：本文档的「关键文件」全部以现行代码为准。Coordinator 已于 2026-07-12 退役，
+> `internal/orchestrator/` 包已删除；其 Writer 上下文职责迁移到
+> `internal/agents/context_manager.go` + `internal/agents/ctxpack/`（见 docs/engine-arbiter.md）。
+
 ## 1. 设计目标
 
 本项目的上下文管理不是通用聊天场景，而是面向小说创作场景。它要同时解决几类问题：
 
 1. 长对话会超出模型上下文窗口。
-2. 小说创作需要保留的不是“聊天历史本身”，而是结构化叙事记忆。
+2. 小说创作需要保留的不是"聊天历史本身"，而是结构化叙事记忆。
 3. Writer 在压缩后不能丢掉角色状态、伏笔、章节计划、风格约束、审稿待修项。
-4. 恢复写作时不能假设模型还“记得之前聊过什么”，必须优先依赖持久化工件。
+4. 恢复写作时不能假设模型还"记得之前聊过什么"，必须优先依赖持久化工件。
 
-因此我们采用的是一套“分层记忆”方案：
+因此我们采用的是一套"分层记忆"方案：
 
 - 短期记忆：最近保留的消息尾部
 - 中期记忆：压缩生成的 `ContextSummary`
 - 长期记忆：项目 store 中的结构化工件
-- 恢复记忆：handoff / restore pack / novel_context
+- 恢复记忆：restore pack / novel_context
 
 ## 2. 整体架构
 
@@ -32,17 +36,21 @@
 
 当前上下文管理分成四层：
 
-1. `agentcore/context`
+1. `agentcore/context`（外部依赖，`github.com/voocel/agentcore/context`）
    负责通用的上下文预算、策略管线、压缩/恢复框架。
 
-2. `internal/tools/novel_context`
+2. `internal/agents/context_manager.go`
+   负责把 agentcore 的通用引擎装配成 Writer 专用的 ContextManager：
+   策略顺序、预算参数、`FullSummary` 自定义 prompt、restore hook 都在这里接线。
+
+3. `internal/agents/ctxpack/`
+   Writer 专用的 store-based 压缩与恢复：
+   - `strategy.go`：`StoreSummaryCompact` 策略（零 LLM 的结构化记忆替换）
+   - `builder.go`：store 数据的读取与渲染（摘要/恢复共用，避免口径漂移）
+   - `restore.go`：`WriterRestorePack`（压缩后恢复包）与 Writer 摘要 prompt
+
+4. `internal/tools/novel_context`
    负责把小说项目中的结构化数据装配成当前轮可用上下文。
-
-3. `internal/orchestrator/store_summary_*`
-   负责 Writer 专用的 store-based 快速压缩。
-
-4. `internal/orchestrator/writer_restore.go`
-   负责在 `FullSummary` 之后追加一份压缩后恢复包，确保 Writer 能继续写。
 
 ### 2.2 数据流
 
@@ -54,15 +62,15 @@
    - 这些数据进入当前轮 prompt
 
 2. 上下文过长路径
-   - `ContextManager` 检测到 token 压力
+   - `ContextEngine`（agentcore）检测到 token 压力
    - 按策略顺序压缩
    - 优先尝试轻量压缩和 store-based 压缩
    - 还不够时才走 LLM `FullSummary`
-   - `FullSummary` 后注入 restore pack
+   - `FullSummary` 后经 `PostSummaryHook` 注入 restore pack
 
 ## 3. 关键文件
 
-### 3.1 通用上下文引擎
+### 3.1 通用上下文引擎（agentcore，外部依赖）
 
 - `../agentcore/context/strategy.go`
 - `../agentcore/context/engine.go`
@@ -71,6 +79,7 @@
 - `../agentcore/context/strategy_summary.go`
 - `../agentcore/context/message.go`
 - `../agentcore/context/summary_run.go`
+- `../agentcore/context/usage.go`
 
 作用：
 
@@ -78,29 +87,34 @@
 - 负责基于预算执行策略链
 - 负责 `ContextSummary` 的表示与 LLM 转换
 - 负责 `FullSummary` 的 LLM 摘要压缩
+- 熔断器（连续压缩失败跳过本轮）与 CJK 感知的 token 估算也在这里
 
-### 3.2 项目侧接线
+### 3.2 项目侧接线（ContextManager 装配）
 
-- `internal/orchestrator/agents.go`
+- `internal/agents/context_manager.go`
+- `internal/agents/build.go`
 
 作用：
 
-- 组装 Writer 的 `ContextManager`（Coordinator 已于 2026-07-12 退役，见 docs/engine-arbiter.md）
-- 给 Writer 注入额外的 `StoreSummaryCompact`
-- 给 Writer 配置小说定制的 `FullSummary` prompt
-- 给 Writer 配置 `writerRestorePack`
+- `newContextManager` 按当前模型窗口组装 Writer 的 `ContextEngine`：
+  策略顺序固定为 `ToolResultMicrocompact → LightTrim → 额外策略 → FullSummary`
+- `build.go` 的 `BuildWorkers` 提供 Writer 的 `ContextManagerFactory`（每次 spawn 重建，
+  `/model` 切换后下一章自动用新窗口），注入：
+  - `StoreSummaryCompact`（`internal/agents/ctxpack/strategy.go`）
+  - 小说定制的 `FullSummary` prompt（`internal/agents/ctxpack/restore.go` 的四个常量）
+  - `WriterRestorePack.Hook()` 作为 `PostSummaryHook`
 
 ### 3.3 项目侧压缩与恢复
 
-- `internal/orchestrator/store_summary_strategy.go`
-- `internal/orchestrator/store_summary_builder.go`
-- `internal/orchestrator/writer_restore.go`
+- `internal/agents/ctxpack/strategy.go`
+- `internal/agents/ctxpack/builder.go`
+- `internal/agents/ctxpack/restore.go`
 
 作用：
 
-- 在 LLM 摘要之前，优先使用 store 数据做快速压缩
-- 统一构建 Writer 压缩与恢复所需的结构化上下文
-- 在 `FullSummary` 后追加一份纯内存 restore message
+- 在 LLM 摘要之前，优先使用 store 数据做快速压缩（策略名 `store_summary`）
+- 统一构建 Writer 压缩与恢复所需的结构化上下文（共用 `builder.go` 同一套 section）
+- 在 `FullSummary` 后追加一份纯内存 restore message（`<post-compact-context>` 包裹）
 
 ### 3.4 结构化上下文装配
 
@@ -114,66 +128,57 @@
 - 决定加载多少章节摘要、多少时间线、是否启用分层摘要
 - 把 store 中的章节、角色、伏笔、时间线、审稿经验等装配出来
 
-### 3.5 交接与恢复
+### 3.5 可观测性
 
-- `internal/orchestrator/handoff_policy.go`
-- `internal/orchestrator/recovery_engine.go`
-
-作用：
-
-- 在长篇/返工/审阅阶段优先依赖 handoff
-- 恢复时把结构化交接包拼进 prompt
-
-### 3.6 可观测性
-
-- `internal/orchestrator/run.go`
-- `internal/orchestrator/runtime.go`
-- `internal/entry/tui/panels.go`
+- `internal/agents/context_manager.go`（`contextRewriteCallback`：重写事件进 slog）
+- `internal/host/observer_events.go`（上下文用量经 ToolProgress 事件进 TUI）
 
 作用：
 
-- 记录上下文重写事件
-- 输出策略名称、token 变化、消息保留量
-- 让 TUI 能看到当前上下文是 `projected` 还是 `compacted`
+- 记录上下文重写事件（reason / strategy / tokens_before / tokens_after 等）
+- 让 TUI 能看到当前上下文的 token 占比、scope 与最后一次策略名称
 
 ## 4. ContextManager 是怎么组装的
 
-Writer 走 `newContextManager`（每次 spawn 由工厂按当前模型窗口重建）。Coordinator 退役前走同一工厂，其配置在下表保留作历史对照。
+Writer 走 `newContextManager`（每次 spawn 由工厂按当前模型窗口重建，见
+`internal/agents/build.go` 的 `ContextManagerFactory`）。
 
 当前 `contextManagerConfig` 的关键参数：
 
 - `ContextWindow`
-  模型总上下文窗口。
+  模型总上下文窗口（经 `bootstrap.ResolveContextWindow` 按模型名解析）。
 
 - `ReserveTokens`
-  给模型输出预留的 token。
+  给模型输出预留的 token（`bootstrap.CompactReserveTokens(window)` 按比例反算）。
 
 - `KeepRecentTokens`
-  压缩时尽量保留的最近消息尾部预算。
+  压缩时尽量保留的最近消息尾部预算。Writer 固定 20000。
 
 - `ToolMicrocompact`
-  工具结果微压缩配置。
+  工具结果微压缩配置。Writer 设置了 `IdleThreshold = 5m`。
 
 - `ExtraStrategies`
   项目侧额外压缩策略。当前 Writer 用来挂 `StoreSummaryCompact`。
 
 - `Summary`
-  `FullSummary` 的配置，包括自定义 prompt 和 post-summary hook。
+  `FullSummary` 的配置，包括自定义 prompt 和 post-summary hook
+  （`WriterRestorePack.Hook()`）。
 
 当前实际配置值：
 
-| 参数 | Writer | Coordinator（已退役，历史对照） |
-|------|--------|-------------|
-| ReserveTokens | 16,384 | 32,000 |
-| KeepRecentTokens | 20,000 | 30,000 |
-| CommitOnProject | false | true |
-| IdleThreshold | 5min | 无 |
-| ExtraStrategies | StoreSummaryCompact | 无 |
-| 自定义 Summary Prompt | 小说叙事版 | 默认(代码助手版) |
+| 参数 | Writer |
+|------|--------|
+| KeepRecentTokens | 20,000 |
+| ReserveTokens | `CompactReserveTokens(window)`（按 CompactRatio 反算） |
+| CommitOnProject | true |
+| IdleThreshold | 5min |
+| ExtraStrategies | StoreSummaryCompact（KeepRecentTokens 20,000，摘要预算约 7000 tokens） |
+| 自定义 Summary Prompt | 小说叙事版（`ctxpack.WriterSummaryPrompt` 等四个常量） |
+| PostSummaryHook | WriterRestorePack（恢复预算约 6000 tokens） |
 
 压缩触发阈值 = `ContextWindow - ReserveTokens`。例如窗口 128K 时，Writer 在 ~112K 触发。
 
-当前 Writer 的策略管线顺序是：
+当前 Writer 的策略管线顺序是（`newContextManager` 中固定）：
 
 1. `ToolResultMicrocompact`
 2. `LightTrim`
@@ -203,7 +208,7 @@ Writer 走 `newContextManager`（每次 spawn 由工厂按当前模型窗口重�
 价值：
 
 - 工具返回内容通常体积大、信息密度低
-- 很多旧工具结果只是“过程噪音”，不是小说记忆
+- 很多旧工具结果只是"过程噪音"，不是小说记忆
 
 当前 Writer 的配置特点：
 
@@ -244,18 +249,18 @@ Writer 走 `newContextManager`（每次 spawn 由工厂按当前模型窗口重�
 
 实现位置：
 
-- `internal/orchestrator/store_summary_strategy.go`
-- `internal/orchestrator/store_summary_builder.go`
+- `internal/agents/ctxpack/strategy.go`
+- `internal/agents/ctxpack/builder.go`
 
 作用：
 
 - 当 Writer 上下文过长时
 - 优先使用持久化 store 中的结构化记忆来替换旧消息
-- 不调用 LLM
+- 不调用 LLM（策略名 `store_summary`）
 
-它不是对话摘要，而是“结构化记忆替换”。
+它不是对话摘要，而是"结构化记忆替换"。
 
-当前保留的核心数据包括：
+当前保留的核心数据包括（`builder.go` 的 `writerStoreSummarySections`）：
 
 - 当前进度
 - 最近章节摘要
@@ -269,7 +274,7 @@ Writer 走 `newContextManager`（每次 spawn 由工厂按当前模型窗口重�
 - 最近时间线
 - 风格规则
 
-触发前提：
+触发前提（`loadWriterStoreSummaryState`）：
 
 - 当前章节大于 1
 - store 中已经有足够的历史摘要
@@ -303,7 +308,7 @@ Writer 走 `newContextManager`（每次 spawn 由工厂按当前模型窗口重�
 
 Writer 与默认代码助手不同的地方：
 
-- Writer 使用了自定义 summary prompt
+- Writer 使用了自定义 summary prompt（`ctxpack/restore.go` 的四个常量）
 - 摘要内容明确要求保留：
   - 当前进度
   - 角色即时状态
@@ -328,8 +333,8 @@ Writer 与默认代码助手不同的地方：
 作用：
 
 - 当压缩连续失败达到阈值（默认 3 次）时，跳过当前轮压缩
-- 跳过时仍然发出 `RewriteEvent`（`Reason = “circuit_breaker”`）
-- TUI 会显示 scope 为”熔断跳过”
+- 跳过时仍然发出 `RewriteEvent`（`Reason = "circuit_breaker"`）
+- TUI 会显示 scope 为"熔断跳过"
 - 采用半开模式：跳过一轮后下次会重试，成功则复位，再失败再跳过
 
 为什么需要：
@@ -340,7 +345,7 @@ Writer 与默认代码助手不同的地方：
 
 排障：
 
-- 如果 TUI 持续显示”熔断跳过”，说明 LLM 摘要路径有问题
+- 如果 TUI 持续显示"熔断跳过"，说明 LLM 摘要路径有问题
 - 检查 slog 中 `reason=circuit_breaker` 的上下文重写事件
 - 熔断不影响 `StoreSummaryCompact`（它不调 LLM）
 
@@ -368,11 +373,11 @@ Writer 与默认代码助手不同的地方：
 - `EstimateTokens`（单条消息）
 - `EstimateTotal`（消息列表）
 - `EstimateContextTokens`（混合估算：LLM 上报 Usage + 尾部消息估算）
-- `store_summary_builder.go` 中的预算裁剪
+- `ctxpack/builder.go` 中的预算裁剪
 
 注意：ToolCall 的 args 是 JSON（ASCII 主导），仍使用 `bytes/4`，不受 CJK 调整影响。
 
-## 6. Writer 为什么有两套”压缩后记忆”
+## 6. Writer 为什么有两套"压缩后记忆"
 
 当前 Writer 有两条看起来相近、但职责不同的链路：
 
@@ -388,15 +393,17 @@ Writer 与默认代码助手不同的地方：
 - 零 LLM
 - 用 store 替换更早历史
 
-### 6.2 writerRestorePack
+### 6.2 WriterRestorePack
 
 实现位置：
 
-- `internal/orchestrator/writer_restore.go`
+- `internal/agents/ctxpack/restore.go`
 
 职责：
 
-- 在 `FullSummary` 之后追加一条 restore message
+- 在 `FullSummary` 之后追加一条 restore message（`<post-compact-context>` 包裹）
+- 由 `WriterRestorePack.Refresh` 在每次 writer 派发前刷新（见 `internal/host` 的
+  `engine.refresh` / `host.go`），Hook 路径纯内存、无 IO
 
 特点：
 
@@ -411,7 +418,7 @@ Writer 与默认代码助手不同的地方：
 - `FullSummary` 即使做得再好，也可能遗漏 store 中的精确信息
 - 所以 restore pack 作为最后一道保险
 
-现在这两者已经共用 `store_summary_builder.go`，避免口径漂移。
+现在这两者已经共用 `ctxpack/builder.go` 的同一套 section 渲染，避免口径漂移。
 
 ## 7. novel_context 的作用
 
@@ -420,7 +427,7 @@ Writer 与默认代码助手不同的地方：
 - `internal/tools/novel_context.go`
 - `internal/tools/novel_context_builders.go`
 
-`novel_context` 不是压缩策略，它是运行时的“结构化上下文装配器”。
+`novel_context` 不是压缩策略，它是运行时的"结构化上下文装配器"。
 
 它把 store 中的数据分成几类：
 
@@ -446,7 +453,7 @@ Writer 与默认代码助手不同的地方：
 
 价值：
 
-- 它决定了每一轮真正“喂给模型”的结构化小说上下文
+- 它决定了每一轮真正"喂给模型"的结构化小说上下文
 - `StoreSummaryCompact` 不是调用它本身，但和它复用同类数据来源与装配思路
 
 ## 8. ContextProfile 与 MemoryPolicy
@@ -487,7 +494,7 @@ Writer 与默认代码助手不同的地方：
 
 - 把当前上下文使用策略显式写出来
 - 供 `novel_context` 输出
-- 供 handoff / reminder / 诊断逻辑使用
+- 供宿主层决策与诊断逻辑使用
 
 关键字段：
 
@@ -500,25 +507,20 @@ Writer 与默认代码助手不同的地方：
 
 价值：
 
-- 把“当前系统应该如何使用记忆”从隐式逻辑变成显式运行时策略
+- 把"当前系统应该如何使用记忆"从隐式逻辑变成显式运行时策略
 
-## 9. handoff 的作用
+> 注：`HandoffPreferred` 是历史兼容字段（Coordinator 时代的 handoff 通道已退役），
+> 现在只作为 memory policy 的展示字段保留；实际的"恢复包"链路是
+> `WriterRestorePack`（见 §6.2）。
 
-实现位置：
+## 9. 中断恢复依赖什么
 
-- `internal/orchestrator/handoff_policy.go`
+恢复写作时不依赖聊天历史。事实层保证恢复后 Writer 仍能接续：
 
-当作品进入更长、更复杂、更依赖结构化工件的阶段时，系统会偏向 handoff。
-
-handoff pack 会记录：
-
-- 当前阶段与 flow
-- 下一章位置
-- 最近提交
-- 最近审阅
-- 最近摘要
-- 当前 memory policy
-- 恢复指导语
+- `checkpoints`：每一步工具成功的落盘足迹（崩溃后据此重跑）
+- `WriterRestorePack`：writer 派发前刷新的结构化恢复包（压缩后注入）
+- `novel_context`：每轮按需装配的当前状态
+- store 工件（章节计划 / 摘要 / 进度 / 伏笔台账等）本身就是恢复事实
 
 价值：
 
@@ -531,29 +533,21 @@ handoff pack 会记录：
 
 实现位置：
 
-- `internal/orchestrator/run.go`
+- `internal/agents/context_manager.go`（`contextRewriteCallback`）
 
-每次上下文重写都会通过 `contextRewriteCallback` 输出：
+每次上下文重写都会输出（进 slog，module=context）：
 
 - `reason`
 - `strategy`
 - `committed`
 - `tokens_before`
 - `tokens_after`
-- `messages_before`
-- `messages_after`
-- `compacted_count`
-- `kept_count`
-- `split_turn`
-- `incremental`
-- `summary_runes`
+- `msgs_before` / `msgs_after`
+- `compacted` / `kept`
 - `duration_ms`
 
-这会同时进入：
-
-- `slog`
-- runtime boundary 队列
-- TUI `COMPACT` 事件
+上下文用量（percent / tokens / window / strategy / scope）则经
+`internal/host/observer_events.go` 的 ToolProgress 事件进入 TUI。
 
 ### 10.2 TUI 中能看到什么
 
@@ -563,7 +557,6 @@ TUI 会展示：
 - context window
 - 当前上下文 scope（含"熔断跳过"）
 - 当前最后一次策略名称
-- summary 数量
 
 上下文百分比的颜色含义（实现在 `internal/entry/tui/layout.go`）：
 
@@ -573,7 +566,7 @@ TUI 会展示：
 | 黄色 | 70-85% | 接近压缩阈值 |
 | 红色 | > 85% | 即将或正在压缩 |
 
-Scope 的中文标签：
+Scope 的中文标签（`internal/entry/tui/panels_sidebar.go`）：
 
 | Scope | 显示 | 含义 |
 |-------|------|------|
@@ -596,14 +589,14 @@ Scope 的中文标签：
 先看：
 
 - `novel_context` 是否稳定注入 `chapter_plan`
-- `store_summary_builder.go` 是否拿到 `chapterPlan`
-- `writerRestorePack` 是否刷新
+- `ctxpack/builder.go` 是否拿到 `chapterPlan`
+- `WriterRestorePack` 是否刷新（writer 派发前 `engine.refresh`）
 
 重点文件：
 
 - `internal/tools/novel_context_builders.go`
-- `internal/orchestrator/store_summary_builder.go`
-- `internal/orchestrator/session.go`
+- `internal/agents/ctxpack/builder.go`
+- `internal/agents/ctxpack/restore.go`
 
 #### 场景 2：压缩后丢角色状态/伏笔
 
@@ -611,8 +604,8 @@ Scope 的中文标签：
 
 - `LoadLatestSnapshots`
 - `LoadActiveForeshadow`
-- `store_summary_builder.go`
-- Writer summary prompt 是否被覆盖
+- `ctxpack/builder.go` 的 section 渲染
+- Writer summary prompt 是否被覆盖（`ctxpack/restore.go` 的四个常量）
 
 #### 场景 3：压缩频繁但总是不命中 store_summary
 
@@ -621,15 +614,15 @@ Scope 的中文标签：
 - 当前章节是不是 `<= 1`
 - 是否已有 recent summaries / arc / volume summary
 - 是否存在 `chapter_plan` 或 `current_outline`
-- `writer.Context.Strategy` 最终记录的是不是 `full_summary`
+- 日志里 `strategy` 最终记录的是不是 `full_summary`
 
 #### 场景 4：恢复后上下文不够
 
 先看：
 
-- handoff 是否生成
-- restore pack 是否刷新
-- recovery prompt 是否注入 handoff
+- `WriterRestorePack.Refresh` 是否在派发前被调用
+- restore pack 是否因预算超限被丢弃（`buildMessage` 返回 false）
+- `novel_context` 的输出是否随 checkpoint 恢复
 
 #### 场景 5：工具结果太多导致上下文膨胀
 
@@ -645,25 +638,25 @@ Scope 的中文标签：
 1. 不把小说业务逻辑塞进 `agentcore`
 2. 优先依赖结构化 store，而不是聊天历史
 3. Writer 使用专门的小说摘要 prompt
-4. 压缩与恢复尽量共用 builder，避免口径漂移
+4. 压缩与恢复尽量共用 builder（`ctxpack/builder.go`），避免口径漂移
 
 ### 当前仍然有意保留的限制
 
 1. `StoreSummaryCompact` 只给 Writer 用
 2. 第一章不会命中 store-based compact
 3. store 数据不足时仍然回退到 `FullSummary`
-4. `writerRestorePack` 是追加式补偿，不替代 `FullSummary`
+4. `WriterRestorePack` 是追加式补偿，不替代 `FullSummary`
 
 这些限制不是缺陷，而是当前阶段为了控制复杂度做的边界。
 
 ## 12. 一句话总结
 
-本项目的上下文管理不是“把长对话压短”这么简单，而是：
+本项目的上下文管理不是"把长对话压短"这么简单，而是：
 
 `优先用结构化小说记忆维持连续性，在必要时才让 LLM 去摘要对话；并且在压缩、恢复、交接三个环节都尽量依赖同一套持久化工件。`
 
 如果你后续要改这套系统，优先守住下面三条：
 
 1. 不要让 Writer 的关键记忆再次只依赖聊天历史。
-2. 不要让 `store_summary` 和 `writer_restore` 口径分叉。
+2. 不要让 `store_summary` 和 `restore pack` 口径分叉（共用 `ctxpack/builder.go`）。
 3. 出现连续性问题时，先查结构化工件有没有进入上下文，再决定是否改 prompt。

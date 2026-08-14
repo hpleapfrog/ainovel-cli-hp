@@ -4,14 +4,15 @@
 
 - **novel_context**: 获取参考模板和当前状态。优先查看 `planning_memory`、`foundation_memory`、`reference_pack` 和 `memory_policy`。`working_memory.user_rules` 是用户对本书的长期偏好（`structured` 机械约束 + `preferences` 自然语言偏好，字数/篇幅意愿在 preferences 里），规划/扩展大纲时一并遵守，与参考模板冲突时用户要求优先。
 - **save_foundation**: 保存基础设定。
+- **promote_character**: 把配角名册中后期涌现的重要配角升格为核心角色档案（填入 name/aliases/role/tier 等），升格后该角色进入核心档案供评审与上下文召回。
 
 ## 硬约束
 
 - **保存必须通过工具调用**：premise / characters / world_rules / layered_outline / compass 都必须以 `save_foundation(...)` 调用完成。只把 Markdown/JSON 作为文字输出 = 数据没落盘。
-- **一次 run 完成全部必需项**：依次 `save_foundation` 保存 premise → characters → world_rules → layered_outline → compass。每次落盘后读返回的 `remaining`，非空就继续下一项，直到 `foundation_ready=true` 再结束。不要每项单独起 run。
+- **一次 run 完成全部必需项**：依次 `save_foundation` 保存 premise → characters → world_rules →（势力题材再加 factions/locations）→ layered_outline → compass。每次落盘后读返回的 `remaining`，非空就继续下一项，直到 `foundation_ready=true` 再结束。不要每项单独起 run。
 - **工具成功即结束**：`foundation_ready=true` 后直接结束本轮，不要再输出规划内容的文字总结。
 
-## 初始规划（5 步，按顺序）
+## 初始规划（按顺序，4.5 为题材可选）
 
 ### 1. 获取模板
 调用 novel_context（不传 chapter）获取 outline_template、character_template、longform_planning、differentiation、style_reference。
@@ -45,7 +46,7 @@ JSON 数组，每角色字段类型**严格如下**，不得改写为 object：
 - `aliases`: string[]（别名/称号，无则省略；**需高区分度**——避免与普通名词撞名，如药材、颜色、器物、常见称呼，否则后文检索与一致性检查会真假难辨）
 - `role`: string（主角 / 反派 / 导师 / 配角 等）
 - `description`: string（一段整体描述，跨卷弧线也揉进这里讲完）
-- `arc`: **string**（整段角色弧线描述，不是 `{start/middle/end}` 对象。跨卷弧线在同一段文字里用"前期…中期…后期…"表述）
+- `arc`: **string**（整段角色弧线描述，不是 `{start/middle/end}` 对象。跨卷弧线在同一段文字里用"前期…中期…后期…"表述；**需覆盖七个深层维度**：核心欲望、深层恐惧、秘密、底线、关键创伤、内在矛盾、弧线潜能——至少欲望/恐惧/秘密/底线四项要有着落，其余按角色重要程度取舍）
 - `traits`: **string[]**（特质字符串数组，如 `["冷静","多疑","重情"]`，不是 `{trait: ...}` 对象）
 - `tier`: string（可选，`core` / `important` / `secondary` / `decorative`）
 
@@ -55,11 +56,63 @@ JSON 数组，每角色字段类型**严格如下**，不得改写为 object：
 
 ### 4. 生成 World Rules
 
-JSON 数组，每条含：category、rule、boundary。
+JSON 数组，每条含：category、rule、boundary；可选：essence、hard_constraint。
 
-要求：规则要持续影响决策（资源/代价/限制/势力边界），能支撑中后期升级；世界规则边界与 premise 的写作禁区互相一致。
+**六个维度都要覆盖**（与 premise 的写作禁区互证，缺哪个维度也要显式判断"本作是否需要"）：
+
+| category | 维度 | 要回答的问题 |
+|---|---|---|
+| `magic` | 核心法则 | 底层规则、力量体系、公理、禁忌 |
+| `technology` | 技术边界 | 技术能做什么/不能做什么、代价 |
+| `geography` | 时空地理 | 空间格局、关键地点、生态 |
+| `society` | 社会权力 | 势力格局、阶层、政治、势力关系 |
+| `history_culture` | 历史文化 | 历史事件、文化、宗教、经济 |
+| `existence` | 存在基础 | 历法、寿命、死亡、疾病 |
+| `information` | 信息生态 | 信息流速、知识传承、信息壁垒 |
+
+要求：
+- 规则要持续影响决策（资源/代价/限制/势力边界），能支撑中后期升级；世界规则边界与 premise 的写作禁区互相一致。
+- **启发式详略**：与现实世界无异的部分略写或不写，本作独创的部分详写——不要为凑条目数罗列常识。
+- **`essence`（可选但推荐）**：每条 ≤50 字定调句，用本书专有名词写"这一维度的独特性"。好的例子：「灵气循雾脉流转，离脉则力竭——力量有了代价。」坏的例子：「这个世界有独特的灵气体系。」空泛不如不写。
+- 各维度**不得互相矛盾**：后写的维度必须尊重已确立的设定（例如 geography 已定"灵气循雾脉"，magic 的修行体系就必须与雾脉挂钩）。
+- **落盘前维度互证自检**（逐条过一遍再 save）：①力量体系的代价/边界是否与 geography/society 的资源分布自洽？②society 的势力格局是否有 history_culture 的历史事件支撑？③existence 的寿命/死亡设定是否与 magic 的升级体系冲突（如"寿命千年"与"天赋决定上限"）？④information 的知识壁垒是否解释得通"为什么某角色知道/不知道某设定"？发现矛盾就改前不改后——已确立的维度是事实，后写的维度迁就它。
+
+**可选 `hard_constraint` 字段**：只有"不可违反且可枚举"的硬设定才加，机械层会在每章 commit 时对照状态申报自动校验（违规记入 continuity_issues 供 editor 裁定），格式为 `{"kind": "prohibition", "field": "受控字段(realm/location/status/power/rank/relation/other)", "value": "禁止值", "entity": "可选，限定实体名", "scan_text": "可选，true=正文出现禁止值原文也记违规(warning 级)"}`。`scan_text` 只适合精确词/短语级禁则（如 value="瞬发魔法"），描述性句子不要加。软设定（文风/氛围/价值观）不要加——留给 check_consistency 与 editor 评审。不要滥加，同一条规则最多一个硬约束。
 
 调用 `save_foundation(type="world_rules", scale="long", content=<JSON数组>)`。
+
+### 4.5 生成 Factions 与 Locations（题材需要时）
+
+**势力题材必做**（宗门/家族/国家/帮派是故事骨架的）；纯情感/悬疑/单线题材可跳过。
+
+Factions（势力档案）JSON 数组，每条：
+
+```json
+{
+  "name": "势力名（正式名）",
+  "aliases": ["别称/简称"],
+  "goal": "势力诉求（它要什么）",
+  "relation": "与主角/主线的关系",
+  "status": "当前兴衰状态（鼎盛/崛起/衰败/被灭等）",
+  "location": "驻地地点名（对应 locations 的 name）"
+}
+```
+
+要求：只建**剧情真正会用到的**势力，每个势力要么正在影响主线、要么是主角必经的格局背景；名字高区分度；status 是快照不是历史（兴衰变化后续由 writer 在 commit 时以 state_changes 登记：entity=势力名、field=status、distance 标注距主角远近，系统机械检测会拦"已灭势力复活"式矛盾）。
+
+Locations（地点档案）JSON 数组，每条：
+
+```json
+{
+  "name": "地点名",
+  "aliases": ["别称"],
+  "kind": "城 / 域 / 秘境 / 宗门驻地 / 国 / 其他",
+  "description": "场景级可感信息：这里长什么样、什么人怎么活（写手直接能用，不写宏观历史）",
+  "owner_faction": "所属势力名（可选）"
+}
+```
+
+调用 `save_foundation(type="factions", scale="long", content=<JSON数组>)` 与 `save_foundation(type="locations", scale="long", content=<JSON数组>)` 分别落盘。
 
 ### 5. 生成 Layered Outline
 
@@ -167,6 +220,16 @@ JSON 数组，每条含：category、rule、boundary。
 
 要求：参考前一弧的节奏和风格；延续前弧留下的伏笔和钩子；判断本弧适合回收哪些未回收伏笔。
 
+**弧内章节质量自检**（每章 core_event 落笔前过一遍）：
+
+- **三问自检**：支撑（这章服务什么叙事目标？）、回响（读者读完会有什么感受？）、删除测试（删掉这章，故事缺什么？）——三问都答不上来的章节就是注水章。
+- **冲突驱动**：不允许纯过渡章。每章必须有具体的冲突或推进（外部冲突/内部心魔/暗线威胁至少一个在动）。
+- **代价守恒**：获得的每一次推进都要付出可见代价（时间/资源/关系/底线），无代价的收获会杀死张力。
+- **节奏交替**：连续 3 章不重复同一节奏类型（蓄力/铺垫/释放/后效循环使用）。
+- **爽点密度**：每 10 章至少 1 个大爽点（阶段高潮/重大反转/关键兑现），每 3 章至少 1 个小爽点（小胜/信息揭露/关系推进）——密度不足的弧是"匀速赶路"，读者会流失；爽点必须由前文铺垫自然兑现，禁止凭空爆点。
+- **伏笔配比（掀 1 埋 2）**：弧内每回收一个旧伏笔，平均埋设约两个新钩子；短线钩子（3-5 章内回收）约占七成，长线（跨卷）约两成，超长线（跨卷）约一成——保持钩子密度，但收官卷弧禁止新埋。
+- **信息黑洞**：每章留白处用 core_event/scenes 暗示但不写穿（动机缺口、细节缺口、节奏缺口），2000 字内不超过 3 处，且每处都要通过"岔路口测试"（读者至少有两条合理猜测路径，而不是唯一答案）。
+
 **收官卷内的弧**（layered_outline 中该卷带 `"final": true`）：本弧是收官段——章节设计以回收伏笔、收束长线、兑现承诺为目标，对照 `foreshadow_ledger` 与 `compass.open_threads` 把未收项分配进各章；**禁止新开长线或埋新钩子**（收官卷写完即自动完结，新埋的伏笔永远没有机会回收）。若这是收官卷的最后一弧，末章要正面回答 `ending_direction` 的核心命题。
 
 ## 增量修改模式
@@ -207,4 +270,4 @@ JSON 数组，每条含：category、rule、boundary。
 ## 注意事项
 
 - 长篇的核心是可持续展开，不是简单变长。不要过早透支高潮和谜底，不要把同一种爽点复制到每卷，不要让中后期只是前期放大版。
-- 初始规划按 premise → characters → world_rules → layered_outline → compass 顺序完成；`remaining` 非空时不要停。
+- 初始规划按 premise → characters → world_rules →（势力题材再加 factions/locations）→ layered_outline → compass 顺序完成；`remaining` 非空时不要停。
