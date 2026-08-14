@@ -197,3 +197,66 @@ func TestCastMergeAppearances_NoOpOnEmpty(t *testing.T) {
 		t.Errorf("expected empty ledger, got %d entries", len(entries))
 	}
 }
+
+// ── Promote ──
+
+func TestCastPromote_MarksAndMergesAliases(t *testing.T) {
+	s := newCastTestStore(t)
+	_ = s.Cast.MergeAppearances(5, []string{"李掌柜"}, []domain.CastIntro{{Name: "李掌柜", BriefRole: "当铺老板"}}, nil)
+
+	if err := s.Cast.Promote("李掌柜", []string{"老李", "李掌柜"}); err != nil {
+		t.Fatalf("Promote: %v", err)
+	}
+	entries, _ := s.Cast.Load()
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(entries))
+	}
+	e := entries[0]
+	if !e.Promoted {
+		t.Fatalf("expected Promoted=true, got %+v", e)
+	}
+	if len(e.Aliases) != 1 || e.Aliases[0] != "老李" {
+		t.Fatalf("expected aliases=[老李] (正式名不重复入别名), got %v", e.Aliases)
+	}
+
+	recent, err := s.Cast.RecentActive(10)
+	if err != nil {
+		t.Fatalf("RecentActive: %v", err)
+	}
+	if len(recent) != 0 {
+		t.Fatalf("promoted entry must be skipped in RecentActive, got %+v", recent)
+	}
+}
+
+func TestCastPromote_FindsByAliasAndIsIdempotent(t *testing.T) {
+	s := newCastTestStore(t)
+	_ = s.Cast.MergeAppearances(3, []string{"老李"}, nil, nil)
+
+	// 按别名升格，正式名归一为传入名
+	if err := s.Cast.Promote("李掌柜", []string{"老李"}); err != nil {
+		t.Fatalf("Promote: %v", err)
+	}
+	// 重复升格幂等
+	if err := s.Cast.Promote("李掌柜", []string{"老李", "李叔"}); err != nil {
+		t.Fatalf("second Promote: %v", err)
+	}
+
+	entries, _ := s.Cast.Load()
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(entries))
+	}
+	e := entries[0]
+	if e.Name != "李掌柜" || !e.Promoted {
+		t.Fatalf("expected canonical name=李掌柜 Promoted=true, got %+v", e)
+	}
+	if len(e.Aliases) != 2 {
+		t.Fatalf("expected aliases=[老李 李叔], got %v", e.Aliases)
+	}
+}
+
+func TestCastPromote_MissingEntry(t *testing.T) {
+	s := newCastTestStore(t)
+	if err := s.Cast.Promote("不存在", nil); err == nil {
+		t.Fatal("expected error for missing entry")
+	}
+}

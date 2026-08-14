@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/voocel/agentcore/schema"
@@ -57,13 +58,50 @@ func (t *SaveReviewTool) Schema() map[string]any {
 		schema.Property("verdict", schema.Enum("审阅结论", "accept", "polish", "rewrite")).Required(),
 		schema.Property("summary", schema.String("审阅总结")).Required(),
 		schema.Property("affected_chapters", schema.Array("需要重写或打磨的章节号列表（verdict 为 polish/rewrite 时必填）", schema.Int(""))),
+		schema.Property("new_foreshadow", schema.Array("正文里导演未计划、但值得追踪的事件（可选，最多 3 条）：入伏笔台账，kind/expected_payoff 语义与 commit_chapter 的 foreshadow_updates 一致，id 用 h### 格式且不与台账重复", schema.Object(
+			schema.Property("id", schema.String("伏笔 ID（h### 格式，不与台账重复）")).Required(),
+			schema.Property("description", schema.String("一句话描述，具体到可追溯的事件/物件/对话")).Required(),
+			schema.Property("kind", schema.Enum("伏笔类型：hook=悬念钩子；debt=叙事债务", "hook", "debt")),
+			schema.Property("expected_payoff", schema.String("预期回收区间（如\"3-5章内\"）")),
+			schema.Property("from", schema.String("债务人（debt 时有效）")),
+			schema.Property("to", schema.String("债权人（debt 时有效）")),
+		))),
 	)
+}
+
+// newForeshadowMax 单次评审最多入账的"计划外伏笔"条数——评审不是大纲导演，
+// 只回收最值得追踪的事件，防止滥加污染台账。
+const newForeshadowMax = 3
+
+// newForeshadowArgs 是 save_review 的 new_foreshadow 条目。
+type newForeshadowArgs struct {
+	ID             string `json:"id"`
+	Description    string `json:"description"`
+	Kind           string `json:"kind"`
+	ExpectedPayoff string `json:"expected_payoff"`
+	From           string `json:"from"`
+	To             string `json:"to"`
 }
 
 func (t *SaveReviewTool) Execute(_ context.Context, args json.RawMessage) (json.RawMessage, error) {
 	var r domain.ReviewEntry
-	if err := json.Unmarshal(args, &r); err != nil {
+	var extra struct {
+		NewForeshadow []newForeshadowArgs `json:"new_foreshadow"`
+	}
+	raw := args
+	if err := json.Unmarshal(raw, &r); err != nil {
 		return nil, fmt.Errorf("invalid args: %w", err)
+	}
+	if err := json.Unmarshal(raw, &extra); err != nil {
+		return nil, fmt.Errorf("invalid args: %w", err)
+	}
+	if len(extra.NewForeshadow) > newForeshadowMax {
+		return nil, fmt.Errorf("new_foreshadow 最多 %d 条，收到 %d", newForeshadowMax, len(extra.NewForeshadow))
+	}
+	for i, nf := range extra.NewForeshadow {
+		if strings.TrimSpace(nf.ID) == "" || strings.TrimSpace(nf.Description) == "" {
+			return nil, fmt.Errorf("new_foreshadow[%d] 需要 id 与 description", i)
+		}
 	}
 	if r.Chapter <= 0 {
 		return nil, fmt.Errorf("chapter must be > 0")
@@ -117,6 +155,30 @@ func (t *SaveReviewTool) Execute(_ context.Context, args json.RawMessage) (json.
 		return nil, fmt.Errorf("save review: %w", err)
 	}
 
+	// 计划外伏笔回收（Bishu 后验"unplanned 事件归类"的轻量版）：评审时把正文里
+	// 导演未计划、但值得追踪的事件顺手埋进伏笔台账——裁决权留在 editor 现有流程
+	// 内，不新增后验管线、不动事实层纪律。plant 幂等（按 ID 合并），best-effort。
+	foreshadowPlanted := 0
+	if len(extra.NewForeshadow) > 0 {
+		updates := make([]domain.ForeshadowUpdate, 0, len(extra.NewForeshadow))
+		for _, nf := range extra.NewForeshadow {
+			updates = append(updates, domain.ForeshadowUpdate{
+				ID:             nf.ID,
+				Action:         "plant",
+				Description:    nf.Description,
+				Kind:           nf.Kind,
+				ExpectedPayoff: nf.ExpectedPayoff,
+				From:           nf.From,
+				To:             nf.To,
+			})
+		}
+		if err := t.store.World.UpdateForeshadow(r.Chapter, updates); err != nil {
+			slog.Warn("评审计划外伏笔入账失败", "module", "tools", "chapter", r.Chapter, "err", err)
+		} else {
+			foreshadowPlanted = len(updates)
+		}
+	}
+
 	// 根据最终 verdict 更新 Progress。
 	// 写失败必须早返回——后续会 append review checkpoint，若此处吞 err，
 	// Engine 会在 Store 仍处于旧 Flow / 缺失 PendingRewrites 的中间态下继续。
@@ -168,16 +230,17 @@ func (t *SaveReviewTool) Execute(_ context.Context, args json.RawMessage) (json.
 	}
 
 	return json.Marshal(map[string]any{
-		"saved":             true,
-		"chapter":           r.Chapter,
-		"scope":             r.Scope,
-		"verdict":           r.Verdict,
-		"final_verdict":     finalVerdict,
-		"escalation_reason": escalationReason,
-		"affected_chapters": affected,
-		"issues":            len(r.Issues),
-		"next_flow":         nextFlow,
-		"next_chapter":      nextChapter,
+		"saved":              true,
+		"chapter":            r.Chapter,
+		"scope":              r.Scope,
+		"verdict":            r.Verdict,
+		"final_verdict":      finalVerdict,
+		"escalation_reason":  escalationReason,
+		"affected_chapters":  affected,
+		"issues":             len(r.Issues),
+		"next_flow":          nextFlow,
+		"next_chapter":       nextChapter,
+		"foreshadow_planted": foreshadowPlanted,
 	})
 }
 

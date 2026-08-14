@@ -368,3 +368,71 @@ func TestSaveReviewDoesNotDirtyQueueOnIllegalFlowTransition(t *testing.T) {
 		t.Fatalf("Flow 应保持 rewriting，got %s", p.Flow)
 	}
 }
+
+// 评审计划外伏笔回收（new_foreshadow）：editor 把正文里导演未计划、但值得追踪的
+// 事件顺手埋进伏笔台账；plant 按 ID 幂等，超 3 条拒绝。
+func TestSaveReview_PlantsNewForeshadow(t *testing.T) {
+	s := store.NewStore(t.TempDir())
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := s.Progress.Init("test", 10); err != nil {
+		t.Fatalf("Progress.Init: %v", err)
+	}
+	if err := s.Progress.MarkChapterComplete(3, 3000, "", ""); err != nil {
+		t.Fatalf("MarkChapterComplete: %v", err)
+	}
+
+	tool := NewSaveReviewTool(s)
+	base := map[string]any{
+		"chapter": 3, "scope": "chapter",
+		"dimensions": []map[string]any{{"dimension": "consistency", "score": 85, "comment": "稳定"},
+			{"dimension": "character", "score": 82, "comment": "稳定"},
+			{"dimension": "pacing", "score": 80, "comment": "正常"},
+			{"dimension": "continuity", "score": 84, "comment": "连贯"},
+			{"dimension": "foreshadow", "score": 80, "comment": "正常"},
+			{"dimension": "hook", "score": 80, "comment": "正常"},
+			{"dimension": "aesthetic", "score": 81, "comment": "成立"}},
+		"issues":  []map[string]any{},
+		"verdict": "accept", "summary": "通过",
+		"new_foreshadow": []map[string]any{
+			{"id": "h001", "description": "铁尘将晶屑扫进桌角铁盒", "kind": "hook", "expected_payoff": "3-5章内"},
+			{"id": "d001", "description": "无名老头欠主角一个解释", "kind": "debt", "from": "无名老头", "to": "主角"},
+		},
+	}
+	args, _ := json.Marshal(base)
+	raw, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var out map[string]any
+	_ = json.Unmarshal(raw, &out)
+	if out["foreshadow_planted"] != float64(2) {
+		t.Fatalf("foreshadow_planted = %v, want 2", out["foreshadow_planted"])
+	}
+
+	entries, err := s.World.LoadForeshadowLedger()
+	if err != nil || len(entries) != 2 {
+		t.Fatalf("foreshadow ledger = %v, err=%v", entries, err)
+	}
+	byID := map[string]domain.ForeshadowEntry{}
+	for _, e := range entries {
+		byID[e.ID] = e
+	}
+	if byID["h001"].Kind != "hook" || byID["h001"].ExpectedPayoff != "3-5章内" {
+		t.Fatalf("hook fields wrong: %+v", byID["h001"])
+	}
+	if byID["d001"].From != "无名老头" || byID["d001"].To != "主角" {
+		t.Fatalf("debt from/to wrong: %+v", byID["d001"])
+	}
+
+	// 超 3 条拒绝
+	base["new_foreshadow"] = []map[string]any{
+		{"id": "h1", "description": "a"}, {"id": "h2", "description": "b"},
+		{"id": "h3", "description": "c"}, {"id": "h4", "description": "d"},
+	}
+	args, _ = json.Marshal(base)
+	if _, err := tool.Execute(context.Background(), args); err == nil {
+		t.Fatal(">3 new_foreshadow entries must be rejected")
+	}
+}

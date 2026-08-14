@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -43,6 +44,7 @@ func (t *SaveArcSummaryTool) Schema() map[string]any {
 	voiceSchema := schema.Object(
 		schema.Property("name", schema.String("角色名")).Required(),
 		schema.Property("rules", schema.Array("2-3 条语言特征规则（每条 ≤30 字）", schema.String(""))).Required(),
+		schema.Property("forbidden_speech", schema.Array("可选：该角色禁止说/禁止出现在对白里的语汇（书面腔、网络流行语、不合身份的口头禅等），writer 写对白时的硬锚点", schema.String(""))),
 	)
 	styleRulesSchema := schema.Object(
 		schema.Property("prose", schema.Array("3-5 条叙述风格规则（每条 ≤50 字，要具体可执行）", schema.String(""))).Required(),
@@ -125,6 +127,12 @@ func (t *SaveArcSummaryTool) Execute(_ context.Context, args json.RawMessage) (j
 		fmt.Sprintf("summaries/arc-v%02da%02d.json", a.Volume, a.Arc),
 	); err != nil {
 		return nil, fmt.Errorf("checkpoint arc summary: %w: %w", errs.ErrStoreWrite, err)
+	}
+
+	// 弧末台账快照归档（best-effort）：追加式台账随章数线性增长，
+	// 弧边界是天然归档点；历史基线仍留在热文件供检测，归档只做可读副本。
+	if err := t.store.World.ArchiveLedgers(a.Volume, a.Arc); err != nil {
+		slog.Warn("台账归档失败", "module", "tools", "volume", a.Volume, "arc", a.Arc, "err", err)
 	}
 
 	return json.Marshal(map[string]any{

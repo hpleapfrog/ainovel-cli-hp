@@ -101,6 +101,8 @@ func resolvedRoleThinking(model agentcore.ChatModel, cfg bootstrap.Config, role 
 // 返回 Tool、AskUserTool、WriterRestorePack 与 ApplyThinking(运行时 /model 联动
 // 各角色推理强度;writer/architect/editor 的 ContextManager 走工厂自动重建)。
 // onGuardBlock 可选(nil 安全):各 Worker StopGuard 的拦截/升级审计回调。
+// onFailover 可选(nil 安全):provider 显式切换事件回调(仅 role 配置了 fallbacks 时
+// 触发)——除本地 slog 外,供 Host 把降级事件浮出到屏内事件流与 notify 告警(P8-1)。
 func BuildWorkers(
 	cfg bootstrap.Config,
 	store *store.Store,
@@ -108,6 +110,7 @@ func BuildWorkers(
 	bundle assets.Bundle,
 	recordUsage UsageRecorder,
 	onGuardBlock guard.BlockHook,
+	onFailover func(bootstrap.FailoverEvent),
 ) (*subagent.Tool, *tools.AskUserTool, *ctxpack.WriterRestorePack, ApplyThinking) {
 	// 共享工具
 	contextTool := tools.NewContextTool(store, bundle.References)
@@ -117,6 +120,7 @@ func BuildWorkers(
 	architectTools := []agentcore.Tool{
 		contextTool,
 		tools.NewSaveFoundationTool(store),
+		tools.NewPromoteCharacterTool(store),
 	}
 	writerTools := []agentcore.Tool{
 		contextTool,
@@ -125,6 +129,7 @@ func BuildWorkers(
 		tools.NewDraftChapterTool(store),
 		tools.NewEditChapterTool(store),
 		tools.NewCheckConsistencyTool(store),
+		tools.NewReportConsistencyTool(store),
 		tools.NewCommitChapterTool(store),
 	}
 	editorTools := []agentcore.Tool{
@@ -135,7 +140,7 @@ func BuildWorkers(
 		tools.NewSaveVolumeSummaryTool(store),
 	}
 
-	// Provider failover 只记日志,不通知宿主
+	// Provider failover 记录日志,并浮出给宿主(事件流 + notify 告警,P8-1)。
 	reportFailover := func(ev bootstrap.FailoverEvent) {
 		slog.Warn("provider 切换",
 			"module", "agent",
@@ -145,6 +150,9 @@ func BuildWorkers(
 			"to", fmt.Sprintf("%s/%s", ev.ToProvider, ev.ToModel),
 			"err", ev.Err,
 		)
+		if onFailover != nil {
+			onFailover(ev)
+		}
 	}
 
 	architectModel := models.ForRoleWithFailover("architect", reportFailover)

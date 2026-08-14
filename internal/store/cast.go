@@ -1,9 +1,11 @@
 package store
 
 import (
+	"fmt"
 	"os"
 	"slices"
 	"sort"
+	"strings"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
 )
@@ -155,4 +157,78 @@ func (s *CastStore) RecentActive(limit int) ([]domain.CastEntry, error) {
 		active = active[:limit]
 	}
 	return active, nil
+}
+
+// Promote 把名册条目升格为核心角色：置 Promoted=true（RecentActive 跳过，
+// 避免与核心档案重复召回）并把 aliases 合并进条目——这是 Aliases 字段的写入通道
+// （如把'李掌柜'与'老李'声明为同一人）。按正式名或传入别名查找，未找到返回错误。
+func (s *CastStore) Promote(name string, aliases []string) error {
+	if strings.TrimSpace(name) == "" {
+		return fmt.Errorf("cast promote: name is required")
+	}
+	return s.io.WithWriteLock(func() error {
+		var entries []domain.CastEntry
+		if err := s.io.ReadJSONUnlocked(castLedgerPath, &entries); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		idx := s.indexOfCastEntry(entries, name)
+		if idx < 0 {
+			idx = s.indexOfCastEntryByAlias(entries, aliases)
+		}
+		if idx < 0 {
+			return fmt.Errorf("cast entry %q not found", name)
+		}
+		e := &entries[idx]
+		merged := make([]string, 0, len(e.Aliases)+len(aliases)+1)
+		seen := map[string]bool{name: true}
+		add := func(v string) {
+			v = strings.TrimSpace(v)
+			if v == "" || seen[v] {
+				return
+			}
+			seen[v] = true
+			merged = append(merged, v)
+		}
+		// 以别名命中时,原正式名成为新正式名的别名(改名归一)。
+		if e.Name != name {
+			add(e.Name)
+		}
+		for _, a := range e.Aliases {
+			add(a)
+		}
+		for _, a := range aliases {
+			add(a)
+		}
+		e.Name = name // 以升格名归一名册正式名
+		e.Aliases = merged
+		e.Promoted = true
+		return s.io.WriteJSONUnlocked(castLedgerPath, entries)
+	})
+}
+
+// indexOfCastEntry 按正式名或别名查找条目索引；未找到返回 -1。
+func (s *CastStore) indexOfCastEntry(entries []domain.CastEntry, name string) int {
+	for i, e := range entries {
+		if e.Name == name {
+			return i
+		}
+	}
+	for i, e := range entries {
+		for _, a := range e.Aliases {
+			if a == name {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+// indexOfCastEntryByAlias 按传入别名集合查找条目索引；未找到返回 -1。
+func (s *CastStore) indexOfCastEntryByAlias(entries []domain.CastEntry, aliases []string) int {
+	for _, alias := range aliases {
+		if i := s.indexOfCastEntry(entries, alias); i >= 0 {
+			return i
+		}
+	}
+	return -1
 }
