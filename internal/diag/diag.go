@@ -22,6 +22,9 @@ const (
 	ThresholdCompassDrift      = 15  // CompassDrift: 指南针未更新章数上限
 	ThresholdTimelineGapRate   = 0.3 // TimelineGaps: 缺失率容忍上限
 	ThresholdUnreportedChronic = 3   // ContinuityAlerts: 同一角色漏报多少章才算慢性
+	// CrossChapterFatigue: 疲劳词跨章覆盖度/密度的提醒阈值(P8-3)。
+	ThresholdCrossChapterFatigueRatio    = 0.7 // 出现在多少比例的章节才提醒
+	ThresholdCrossChapterFatigueMinCount = 2   // 平均每章至少出现多少次才提醒
 )
 
 // allRules 按 flow → quality → planning → context 排列。
@@ -39,6 +42,7 @@ var allRules = []RuleFunc{
 	PayoffMissPattern,
 	ExcessiveRewrites,
 	WordCountAnomaly,
+	CrossChapterFatigue,
 	// Planning
 	StaleForeshadow,
 	CompassDrift,
@@ -49,6 +53,7 @@ var allRules = []RuleFunc{
 	TimelineGaps,
 	RelationshipStagnation,
 	ContinuityAlerts,
+	FactionDrift,
 }
 
 // Analyze 是诊断系统的唯一入口。
@@ -73,8 +78,13 @@ func Analyze(s *store.Store) Report {
 	}
 	sortFindings(findings)
 
+	stats := buildStats(&snap)
+	stats.StateChangeCount = len(snap.StateChanges)
+	stats.TimelineCount = len(snap.Timeline)
+	stats.AppendOnlyBytes = AppendOnlyBytes(s)
+
 	return Report{
-		Stats:    buildStats(&snap),
+		Stats:    stats,
 		Findings: findings,
 		Actions:  PlanActions(findings),
 	}

@@ -8,6 +8,46 @@ import (
 	"github.com/voocel/ainovel-cli/internal/domain"
 )
 
+// FactionDrift 检测势力档案快照与状态历史轨迹的漂移（W1）：
+// writer 经 commit_chapter.faction_updates 把兴衰变化登记进 state_changes 历史轨迹
+// 并同步档案快照；若两条通道因漏报/半写/旧数据产生分歧（历史轨迹最新值 ≠ 档案
+// status），机械检测与上下文召回会基于不同的"现状"工作——漂移必须被看见。
+func FactionDrift(snap *Snapshot) []Finding {
+	if len(snap.Factions) == 0 || len(snap.StateChanges) == 0 {
+		return nil
+	}
+	// 每个势力的 status 最新历史值（Entity+Field 口径与检测一致）
+	latest := make(map[string]domain.StateChange)
+	for _, c := range snap.StateChanges {
+		if c.Field != "status" {
+			continue
+		}
+		if cur, ok := latest[c.Entity]; !ok || c.Chapter > cur.Chapter {
+			latest[c.Entity] = c
+		}
+	}
+
+	var findings []Finding
+	for _, f := range snap.Factions {
+		sc, ok := latest[f.Name]
+		if !ok || sc.NewValue == f.Status {
+			continue
+		}
+		findings = append(findings, Finding{
+			Rule:       "FactionDrift",
+			Category:   CatContext,
+			Severity:   SevWarning,
+			Confidence: ConfHigh,
+			AutoLevel:  AutoNone,
+			Target:     "world.factions",
+			Title:      fmt.Sprintf("势力 [%s] 档案与历史轨迹漂移：档案=%s，最新轨迹=%s", f.Name, f.Status, sc.NewValue),
+			Evidence:   fmt.Sprintf("state_changes 第 %d 章登记 status=%s，而 factions.json 快照仍为 %s", sc.Chapter, sc.NewValue, f.Status),
+			Suggestion: "两个事实源必须收敛：若轨迹正确 → architect 用 save_foundation(type=factions) 校正档案；若档案正确 → 该条轨迹是误报，editor 评审返工纠正。",
+		})
+	}
+	return findings
+}
+
 // GhostCharacter 检测 core/important 角色长期未出现。
 func GhostCharacter(snap *Snapshot) []Finding {
 	if snap.Progress == nil || len(snap.Characters) == 0 || len(snap.Summaries) == 0 {

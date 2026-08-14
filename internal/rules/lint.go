@@ -10,7 +10,7 @@ import (
 // Lint 内置产品底线检查：扫描正文中的机制残留，与用户规则无关，commit 时始终执行。
 // 与 Check 同契约——仅返事实（铁律一），不阻断流程，由评审/用户裁定。
 //
-// 当前六类（全部来自真实长跑产物的实证缺陷）：
+// 当前十一类（全部来自真实长跑产物的实证缺陷 + Bishu 写手约束中可机械化的子集）：
 //   - markdown_residue：正文残留 markdown 记号（** 加粗、反引号、行首列表/引用标记、
 //     首行之外的 # 标题行）——导出 txt 会裸露符号
 //   - non_cjk_fragments：连续拉丁字母片段（模型语言混杂，如中文正文裸混 "pattern"）
@@ -18,6 +18,16 @@ import (
 //   - straight_quotes：ASCII 直引号（" '）——中文对白应使用弯引号“”‘’
 //   - unbalanced_quotes：弯引号开闭计数不等——引号未闭合或配对错乱，对白边界丢失
 //   - paragraph_break：疑似段中换行（句未收尾即断行，≥3 处才报）——长段被拦腰折断
+//   - dash_abuse：全角破折号「——」高频出现（>8 处/章）——破折号是模型最典型的
+//     AI 味标点之一（Bishu 全禁）；少数用作剧情转折/语气停顿合法，成规模即病
+//   - soft_filler：「了一下」高频出现（>6 处/章）——动词弱化填充，把具体动作
+//     泛化为"做了那么一下"
+//   - ai_marker_words：高频 AI 标记词（仿佛/忽然/竟然/猛地/猛然/不禁/宛如）——
+//     Bishu 口径"每三千字最多一次"，这里放宽为每 3000 字 2 次
+//   - cliche_micro_expressions：俗套微表情/身体反应（嘴角勾起/瞳孔一缩/倒吸一口凉气等）——
+//     单章合计 >3 处即成模型腔
+//   - narrator_intrusion：叙事者闯入（元叙事/编剧旁白/群像反应/段尾升华的固定句式）——
+//     出现即 warning
 func Lint(text string) []Violation {
 	var vs []Violation
 	vs = appendMarkdownResidue(vs, text)
@@ -26,6 +36,11 @@ func Lint(text string) []Violation {
 	vs = appendStraightQuotes(vs, text)
 	vs = appendUnbalancedQuotes(vs, text)
 	vs = appendParagraphBreaks(vs, text)
+	vs = appendDashAbuse(vs, text)
+	vs = appendSoftFiller(vs, text)
+	vs = appendAIMarkerWords(vs, text)
+	vs = appendClicheMicroExpressions(vs, text)
+	vs = appendNarratorIntrusion(vs, text)
 	return vs
 }
 
@@ -243,4 +258,130 @@ func tailRunes(s string, n int) string {
 		return s
 	}
 	return string(r[len(r)-n:])
+}
+
+// dashAbuseLimit 单章全角破折号「——」的容忍次数。少数剧情转折/语气停顿合法；
+// 成规模出现是模型最典型的 AI 味标点（Bishu 侧全禁，这里 warning 级事实交评审裁定）。
+const dashAbuseLimit = 8
+
+func appendDashAbuse(vs []Violation, text string) []Violation {
+	n := strings.Count(text, "——")
+	if n <= dashAbuseLimit {
+		return vs
+	}
+	return append(vs, Violation{
+		Rule:     "dash_abuse",
+		Target:   "——",
+		Limit:    dashAbuseLimit,
+		Actual:   n,
+		Severity: SeverityWarning,
+	})
+}
+
+// softFillerLimit 「了一下」单章容忍次数：动词弱化填充，把具体动作泛化为"做了那么一下"。
+const softFillerLimit = 6
+
+func appendSoftFiller(vs []Violation, text string) []Violation {
+	n := strings.Count(text, "了一下")
+	if n <= softFillerLimit {
+		return vs
+	}
+	return append(vs, Violation{
+		Rule:     "soft_filler",
+		Target:   "了一下",
+		Limit:    softFillerLimit,
+		Actual:   n,
+		Severity: SeverityWarning,
+	})
+}
+
+// ── AI 标记词（Bishu 写手约束 #13）──
+
+// aiMarkerWords 高频 AI 标记词：不是绝对禁用，但成规模出现是模型腔。
+// Bishu 口径"每三千字最多一次"，这里放宽为每 3000 字 2 次（合计）。
+var aiMarkerWords = []string{"仿佛", "忽然", "竟然", "猛地", "猛然", "不禁", "宛如"}
+
+func appendAIMarkerWords(vs []Violation, text string) []Violation {
+	count := 0
+	var hit []string
+	for _, w := range aiMarkerWords {
+		if n := strings.Count(text, w); n > 0 {
+			count += n
+			hit = append(hit, fmt.Sprintf("%s×%d", w, n))
+		}
+	}
+	if count == 0 {
+		return vs
+	}
+	limit := 2 * max(1, len([]rune(text))/3000)
+	if count <= limit {
+		return vs
+	}
+	return append(vs, Violation{
+		Rule:     "ai_marker_words",
+		Target:   strings.Join(hit, "、"),
+		Limit:    limit,
+		Actual:   count,
+		Severity: SeverityWarning,
+	})
+}
+
+// ── 俗套微表情（Bishu 写手约束 #14）──
+
+// clicheMicroExpressions 俗套微表情/身体反应清单：单章合计超阈值即模型腔。
+var clicheMicroExpressions = []string{
+	"嘴角勾起", "嘴角上扬", "眼里闪过一丝", "眸色一沉", "眼神暗了暗", "眉头微皱",
+	"呼吸一滞", "倒吸一口凉气", "喉结微滚", "浑身一震", "身子一僵", "指尖泛白",
+}
+
+// clicheMicroLimit 单章合计容忍次数。
+const clicheMicroLimit = 3
+
+func appendClicheMicroExpressions(vs []Violation, text string) []Violation {
+	count := 0
+	var hit []string
+	for _, w := range clicheMicroExpressions {
+		if n := strings.Count(text, w); n > 0 {
+			count += n
+			hit = append(hit, fmt.Sprintf("%s×%d", w, n))
+		}
+	}
+	if count <= clicheMicroLimit {
+		return vs
+	}
+	return append(vs, Violation{
+		Rule:     "cliche_micro_expressions",
+		Target:   strings.Join(hit, "、"),
+		Limit:    clicheMicroLimit,
+		Actual:   count,
+		Severity: SeverityWarning,
+	})
+}
+
+// ── 叙事者闯入（Bishu 写手约束 #10/#11/#12）──
+
+// narratorIntrusions 元叙事/编剧旁白/群像反应/段尾升华的固定句式清单：出现即违规。
+var narratorIntrusions = []string{
+	"故事发展到这一步", "读者也许会想", "接下来发生的事", "一切才刚刚开始",
+	"有些事情永远改变", "再也回不去", "那天晚上改变所有人的命运",
+	"全场震惊", "所有人都惊呆了", "众人倒吸一口凉气", "所有人心头一紧",
+	"众人面面相觑",
+}
+
+func appendNarratorIntrusion(vs []Violation, text string) []Violation {
+	var hit []string
+	for _, w := range narratorIntrusions {
+		if n := strings.Count(text, w); n > 0 {
+			hit = append(hit, fmt.Sprintf("%s×%d", w, n))
+		}
+	}
+	if len(hit) == 0 {
+		return vs
+	}
+	return append(vs, Violation{
+		Rule:     "narrator_intrusion",
+		Target:   strings.Join(hit, "、"),
+		Actual:   len(hit),
+		Severity: SeverityWarning,
+	})
 }

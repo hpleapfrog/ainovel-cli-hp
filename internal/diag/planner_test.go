@@ -59,14 +59,14 @@ func TestPhaseFlowMismatchMeta(t *testing.T) {
 	if len(actions) == 0 {
 		t.Fatal("expected actions from PhaseFlowMismatch")
 	}
-	hasFollowUp := false
+	hasRepair := false
 	for _, a := range actions {
-		if a.Kind == ActionEnqueueFollowUp {
-			hasFollowUp = true
+		if a.Kind == ActionRunRepair {
+			hasRepair = true
 		}
 	}
-	if !hasFollowUp {
-		t.Fatal("expected enqueue_follow_up action")
+	if !hasRepair {
+		t.Fatal("expected run_repair action (AutoSafe 接上离线自动修复)")
 	}
 }
 
@@ -90,10 +90,11 @@ func TestInvalidPendingRewritesMeta(t *testing.T) {
 	if f.Rule != "InvalidPendingRewrites" {
 		t.Fatalf("unexpected rule: %s", f.Rule)
 	}
-	// AutoSafe 但不产出 Action：修复走 /diag 报告按 f 的 Repair 路径，
-	// 不走 PlanActions 的 notice/follow-up 体系。
-	if actions := PlanActions(findings); len(actions) != 0 {
-		t.Fatalf("invalid pending rewrites should not auto-plan actions, got %+v", actions)
+	// AutoSafe 且已登记确定性修复 → 产出可一键应用的 run_repair 动作（P7-2），
+	// 与 /diag 报告按 f 的 Repair 路径同源。
+	actions := PlanActions(findings)
+	if len(actions) != 1 || actions[0].Kind != ActionRunRepair {
+		t.Fatalf("invalid pending rewrites should plan run_repair, got %+v", actions)
 	}
 }
 
@@ -137,7 +138,7 @@ func TestOrphanedSteerMeta(t *testing.T) {
 		t.Fatalf("expected high/safe, got %s/%s", f.Confidence, f.AutoLevel)
 	}
 	actions := PlanActions(findings)
-	if len(actions) != 1 || actions[0].Kind != ActionEnqueueFollowUp {
-		t.Fatalf("expected 1 enqueue_follow_up action, got %+v", actions)
+	if len(actions) != 1 || actions[0].Kind != ActionRunRepair {
+		t.Fatalf("expected 1 run_repair action, got %+v", actions)
 	}
 }

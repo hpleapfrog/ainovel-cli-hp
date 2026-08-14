@@ -29,7 +29,7 @@ func planRule(f Finding) []Action {
 	case "PhaseFlowMismatch":
 		return []Action{
 			{SourceRule: f.Rule, Kind: ActionEmitNotice, Severity: f.Severity, Summary: f.Title, Message: f.Title, Fingerprint: key},
-			{SourceRule: f.Rule, Kind: ActionEnqueueFollowUp, Severity: f.Severity, Summary: "状态机异常修复", Message: "状态机异常：" + f.Evidence + "。请先检查并修正 progress 的 phase/flow 状态，再继续运行。", Fingerprint: key},
+			{SourceRule: f.Rule, Kind: ActionRunRepair, Severity: f.Severity, Summary: "状态机异常修复（flow 复位为初始态）", Message: f.Evidence, Fingerprint: key},
 		}
 	case "OutlineExhausted":
 		return []Action{
@@ -37,9 +37,20 @@ func planRule(f Finding) []Action {
 		}
 	case "OrphanedSteer":
 		return []Action{
-			{SourceRule: f.Rule, Kind: ActionEnqueueFollowUp, Severity: f.Severity, Summary: "消费未处理的用户干预", Message: "存在未消费的用户干预指令，请优先处理 pending steer 后再继续当前任务。", Fingerprint: key},
+			{SourceRule: f.Rule, Kind: ActionRunRepair, Severity: f.Severity, Summary: "清除未消费的用户干预指令", Message: f.Evidence, Fingerprint: key},
+		}
+	case "InvalidPendingRewrites":
+		return []Action{
+			{SourceRule: f.Rule, Kind: ActionRunRepair, Severity: f.Severity, Summary: "清理返工队列中的未完成章节", Message: f.Evidence, Fingerprint: key},
 		}
 	default:
+		// 其它 AutoSafe 规则若已登记确定性修复实现,同样产出可执行修复动作
+		// (repair.go 的 repairFuncs 是唯一事实源,P7-2)。
+		if _, repairable := repairFuncs[f.Rule]; repairable {
+			return []Action{
+				{SourceRule: f.Rule, Kind: ActionRunRepair, Severity: f.Severity, Summary: "自动修复: " + f.Title, Message: f.Evidence, Fingerprint: key},
+			}
+		}
 		return nil
 	}
 }

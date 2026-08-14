@@ -165,3 +165,83 @@ func TestLint_QuotesClean(t *testing.T) {
 		t.Errorf("curly quotes should pass: %+v", vs)
 	}
 }
+
+func TestLint_DashAbuse(t *testing.T) {
+	// 阈值 dashAbuseLimit=8:9 处破折号才报
+	many := strings.Repeat("——", 9)
+	vs := Lint("# 第一章" + many + "夜色渐深。")
+	v := findViolation(vs, "dash_abuse", "——")
+	if v == nil || v.Actual != 9 || v.Limit != 8 {
+		t.Fatalf("expected dash_abuse x9: %+v", vs)
+	}
+	// 少量合法用法不报
+	few := "# 第一章\n他刚要开口——却被门声打断。\n夜色渐深。"
+	for _, item := range Lint(few) {
+		if item.Rule == "dash_abuse" {
+			t.Fatalf("few dashes must not be reported: %+v", item)
+		}
+	}
+}
+
+func TestLint_SoftFiller(t *testing.T) {
+	// 阈值 softFillerLimit=6:7 处才报
+	many := strings.Repeat("他看了一下，", 7)
+	vs := Lint("# 第一章" + many + "夜色渐深。")
+	v := findViolation(vs, "soft_filler", "了一下")
+	if v == nil || v.Actual != 7 || v.Limit != 6 {
+		t.Fatalf("expected soft_filler x7: %+v", vs)
+	}
+	few := "# 第一章\n他看了一下天色。\n夜色渐深。"
+	for _, item := range Lint(few) {
+		if item.Rule == "soft_filler" {
+			t.Fatalf("few fillers must not be reported: %+v", item)
+		}
+	}
+}
+
+func TestLint_AIMarkerWords(t *testing.T) {
+	// 2000 字内出现 4 次 → 超限（每 3000 字限 2）
+	text := "他仿佛看到希望，忽然想起什么，竟然愣住了，猛地转身。"
+	vs := Lint("# 第一章" + text + "夜色渐深。")
+	v := findViolation(vs, "ai_marker_words", "仿佛×1、忽然×1、竟然×1、猛地×1")
+	if v == nil || v.Actual != 4 || v.Limit != 2 {
+		t.Fatalf("expected ai_marker_words x4 limit2: %+v", vs)
+	}
+	// 少量合法使用不报
+	few := "# 第一章\n他忽然停下脚步。\n夜色渐深。"
+	for _, item := range Lint(few) {
+		if item.Rule == "ai_marker_words" {
+			t.Fatalf("few markers must not be reported: %+v", item)
+		}
+	}
+}
+
+func TestLint_ClicheMicroExpressions(t *testing.T) {
+	text := "# 第一章\n他嘴角勾起，眉头微皱，倒吸一口凉气，指尖泛白。\n夜色渐深。"
+	vs := Lint(text)
+	v := findViolation(vs, "cliche_micro_expressions", "嘴角勾起×1、眉头微皱×1、倒吸一口凉气×1、指尖泛白×1")
+	if v == nil || v.Actual != 4 || v.Limit != 3 {
+		t.Fatalf("expected cliche_micro_expressions x4: %+v", vs)
+	}
+	few := "# 第一章\n他眉头微皱。\n夜色渐深。"
+	for _, item := range Lint(few) {
+		if item.Rule == "cliche_micro_expressions" {
+			t.Fatalf("few cliches must not be reported: %+v", item)
+		}
+	}
+}
+
+func TestLint_NarratorIntrusion(t *testing.T) {
+	text := "# 第一章\n一切才刚刚开始。全场震惊。\n夜色渐深。"
+	vs := Lint(text)
+	v := findViolation(vs, "narrator_intrusion", "一切才刚刚开始×1、全场震惊×1")
+	if v == nil || v.Actual != 2 {
+		t.Fatalf("expected narrator_intrusion x2: %+v", vs)
+	}
+	clean := "# 第一章\n他推开门。\n夜色渐深。"
+	for _, item := range Lint(clean) {
+		if item.Rule == "narrator_intrusion" {
+			t.Fatalf("clean text must not be reported: %+v", item)
+		}
+	}
+}

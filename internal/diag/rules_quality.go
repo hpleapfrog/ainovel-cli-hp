@@ -7,6 +7,58 @@ import (
 	"strings"
 )
 
+// CrossChapterFatigue 检测用户显式指定的疲劳词在全书范围内的跨章疲劳（P8-3）。
+//
+// 口径缝隙：fatigue_words 的阈值是"单章上限"（commit 时 rules.Check 机械检查），
+// 表达不了"全书这个词累计不能太多"。词在每章都合规、却几乎每章都出现时，
+// 同样构成读者可感知的复读疲劳——本规则补上这一口径。
+// 与 stylestat 的边界：stylestat 负责动态挖掘短语/整句复读，本规则只覆盖
+// 用户显式指定的词（单章阈值归 rules，跨章统计归 diag）。
+func CrossChapterFatigue(snap *Snapshot) []Finding {
+	if snap.UserRules == nil || len(snap.UserRules.Structured.FatigueWords) == 0 {
+		return nil
+	}
+	total := len(snap.ChapterTexts)
+	if total < 3 {
+		return nil // 样本太少，跨章统计无意义
+	}
+
+	var findings []Finding
+	for word, limit := range snap.UserRules.Structured.FatigueWords {
+		if word == "" || limit <= 0 {
+			continue
+		}
+		chaptersWith := 0
+		count := 0
+		for _, text := range snap.ChapterTexts {
+			if n := strings.Count(text, word); n > 0 {
+				chaptersWith++
+				count += n
+			}
+		}
+		if chaptersWith < 2 {
+			continue
+		}
+		// 覆盖度阈值:出现在 ≥70% 章节且平均每章 ≥2 次才值得提醒。
+		if float64(chaptersWith)/float64(total) < ThresholdCrossChapterFatigueRatio ||
+			count < total*ThresholdCrossChapterFatigueMinCount {
+			continue
+		}
+		findings = append(findings, Finding{
+			Rule:       "CrossChapterFatigue",
+			Category:   CatQuality,
+			Severity:   SevWarning,
+			Confidence: ConfMedium,
+			AutoLevel:  AutoNone,
+			Target:     "user.rules",
+			Title:      fmt.Sprintf("疲劳词 [%s] 跨章高覆盖: %d/%d 章, 累计 %d 次", word, chaptersWith, total, count),
+			Evidence:   fmt.Sprintf("单章阈值 %d 次均合规,但全书覆盖度 %.0f%%、平均每章 %.1f 次", limit, float64(chaptersWith)/float64(total)*100, float64(count)/float64(total)),
+			Suggestion: "考虑收紧该词的 fatigue_words 单章阈值，或在后续章节换用同义表达。",
+		})
+	}
+	return findings
+}
+
 // ChronicLowDimension 检测某评审维度跨多章持续低分。
 func ChronicLowDimension(snap *Snapshot) []Finding {
 	if len(snap.Reviews) < 2 {

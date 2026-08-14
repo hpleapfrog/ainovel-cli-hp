@@ -4,8 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
+	"github.com/voocel/ainovel-cli/internal/rules"
 	"github.com/voocel/ainovel-cli/internal/store"
 )
 
@@ -20,6 +22,8 @@ type Snapshot struct {
 	Characters    []domain.Character
 	CastLedger    []domain.CastEntry
 	WorldRules    []domain.WorldRule
+	Factions      []domain.Faction  // 势力档案（W1）
+	Locations     []domain.Location // 地点档案（W1）
 	Timeline      []domain.TimelineEvent
 	Foreshadow    []domain.ForeshadowEntry
 	Relationships []domain.RelationshipEntry
@@ -31,6 +35,11 @@ type Snapshot struct {
 	// ContinuityIssues 是 meta/continuity_issues.jsonl 的按章最新记录
 	// （commit 时机械检测的状态回退/关系跳变/出场漏报；空=复测合格已清）。
 	ContinuityIssues map[int]*domain.ContinuityIssues
+	// UserRules 是本书归一化后的用户规则快照（meta/user_rules.json）。
+	UserRules *rules.Snapshot
+	// ChapterTexts 是已完成章节的正文（仅当 UserRules 含疲劳词时加载，
+	// 供 CrossChapterFatigue 做跨章统计；无疲劳词时保持 nil 省 IO）。
+	ChapterTexts map[int]string
 
 	LoadErrors []string // 非 NotExist 的加载失败，区分"无数据"和"读取出错"
 }
@@ -67,6 +76,10 @@ func Load(s *store.Store) Snapshot {
 	check("cast_ledger", err)
 	snap.WorldRules, err = s.World.LoadWorldRules()
 	check("world_rules", err)
+	snap.Factions, err = s.World.LoadFactions()
+	check("factions", err)
+	snap.Locations, err = s.World.LoadLocations()
+	check("locations", err)
 	snap.Timeline, err = s.World.LoadTimeline()
 	check("timeline", err)
 	snap.Foreshadow, err = s.World.LoadForeshadowLedger()
@@ -78,8 +91,15 @@ func Load(s *store.Store) Snapshot {
 	snap.StyleRules, err = s.World.LoadStyleRules()
 	check("style_rules", err)
 	snap.ContinuityIssues = s.World.LoadAllContinuityIssues()
+	snap.UserRules, err = s.UserRules.Load()
+	check("user_rules", err)
 
 	if snap.Progress != nil {
+		// 跨章疲劳词统计需要正文;仅在用户规则含疲劳词时加载(P8-3)。
+		needTexts := snap.UserRules != nil && len(snap.UserRules.Structured.FatigueWords) > 0
+		if needTexts {
+			snap.ChapterTexts = make(map[int]string, len(snap.Progress.CompletedChapters))
+		}
 		for _, ch := range snap.Progress.CompletedChapters {
 			if plan, err := s.Drafts.LoadChapterPlan(ch); err == nil && plan != nil {
 				snap.Plans[ch] = plan
@@ -95,6 +115,11 @@ func Load(s *store.Store) Snapshot {
 				snap.Reviews[ch] = review
 			} else {
 				check(fmt.Sprintf("review_ch%d", ch), err)
+			}
+			if needTexts {
+				if text, err := s.Drafts.LoadChapterText(ch); err == nil && text != "" {
+					snap.ChapterTexts[ch] = text
+				}
 			}
 		}
 	}
@@ -122,4 +147,33 @@ func (s *Snapshot) LatestCompleted() int {
 		}
 	}
 	return max
+}
+
+// appendOnlyFiles 是追加式/全量重写式台账文件的相对路径清单——它们的体积随
+// 章节数线性增长,是"何时归档压缩"决策的依据(数据先行)。
+var appendOnlyFiles = []string{
+	"meta/state_changes.json",
+	"timeline.json",
+	"meta/checkpoints.jsonl",
+	"meta/decisions.jsonl",
+	"meta/rule_violations.jsonl",
+	"meta/continuity_issues.jsonl",
+	"meta/consistency_checks.jsonl",
+	"meta/cast_ledger.json",
+	"relationship_state.json",
+	"foreshadow_ledger.json",
+}
+
+// AppendOnlyBytes 统计追加式台账文件的体积合计;失败文件静默跳过(指标 best-effort)。
+func AppendOnlyBytes(s *store.Store) int64 {
+	if s == nil {
+		return 0
+	}
+	var total int64
+	for _, rel := range appendOnlyFiles {
+		if info, err := os.Stat(filepath.Join(s.Dir(), rel)); err == nil {
+			total += info.Size()
+		}
+	}
+	return total
 }

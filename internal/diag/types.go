@@ -59,6 +59,7 @@ type ActionKind string
 const (
 	ActionEmitNotice      ActionKind = "emit_notice"       // 发系统提示
 	ActionEnqueueFollowUp ActionKind = "enqueue_follow_up" // 生成后续处理建议
+	ActionRunRepair       ActionKind = "run_repair"        // 已登记确定性修复实现，可一键应用（repair.go 的 Repair）
 )
 
 // Action 是 Planner 根据高置信 Finding 生成的可执行动作。
@@ -85,6 +86,11 @@ type Stats struct {
 	AvgReviewScore    float64
 	ForeshadowOpen    int
 	ForeshadowStale   int
+	// 追加式事实台账的增长指标(数据先行,为归档/压缩决策提供依据):
+	// 这些文件每次 commit 全量重写或追加,长篇几百章后是 O(N²) 级 IO。
+	StateChangeCount int
+	TimelineCount    int
+	AppendOnlyBytes  int64 // 追加式台账文件体积合计(state_changes/timeline/checkpoints/decisions/...)
 }
 
 // Report 是一次诊断运行的完整输出。
