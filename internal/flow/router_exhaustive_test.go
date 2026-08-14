@@ -317,6 +317,9 @@ func assertConservation(t *testing.T, s State, inst *Instruction) {
 	if inst.Task == "" || inst.Reason == "" {
 		t.Fatalf("指令的 Task 与 Reason 都不得为空：%+v", inst)
 	}
+	if inst.Key == "" {
+		t.Fatalf("Route 指令必须携带控制面结构化键 Key（僵局/重试去重与 Task 文案解耦）：%+v", inst)
+	}
 }
 
 // snapshotState 深拷贝 State 用于纯函数断言。

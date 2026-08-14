@@ -69,6 +69,15 @@ type UsageTracker struct {
 	// 首次见到 warn 一次；经 MissingPricing 透出到 UI。
 	unpricedModels map[string]int
 
+	// pricingOverrides 是 config.pricing 的运行时投影（P7-3）：官方直连/自定义
+	// 模型不在注册表时在此声明单价（或 equivalent 等价模型），优先于注册表查询。
+	// 键为 "模型名" 或 "provider/model"。启动时 SetPricingOverrides 写入，之后只读。
+	pricingOverrides map[string]bootstrap.PricingOverride
+
+	// onMissingPricing 在首次发现"存在无法解析价格的模型"时调用一次（与 slog warn
+	// 同时机），把计费盲区喊到 notify（P7-4）。
+	onMissingPricing func(models []string)
+
 	// saveCh 由 Record 在累加后非阻塞触发；autoSaveLoop 监听并按 debounce 落盘。
 	// buffered=1：连续多次 Record 折叠为一次落盘信号；满了直接丢，下个 tick 一并写。
 	saveCh chan struct{}
@@ -255,13 +264,51 @@ func (t *UsageTracker) notifyDirty() {
 	}
 }
 
+// SetPricingOverrides 注册 config.pricing 定价覆盖（P7-3）。必须在 Host 构造期、
+// 并发 Record 开始前调用一次；之后只读。
+func (t *UsageTracker) SetPricingOverrides(overrides map[string]bootstrap.PricingOverride) {
+	if t == nil {
+		return
+	}
+	t.pricingOverrides = overrides
+}
+
+// SetOnMissingPricing 注册"首次发现无法解析价格的模型"回调（携带当前盲区模型列表）。
+// 必须在 Host 构造期、并发 Record 开始前调用一次。
+func (t *UsageTracker) SetOnMissingPricing(cb func(models []string)) {
+	if t == nil {
+		return
+	}
+	t.onMissingPricing = cb
+}
+
+// Reset 清空全部累计（StartPrepared 开新书时调用）：旧书用量不得计入新书预算，
+// 否则新书预算从旧书成本起跳、启动即被 Refuse 拒绝。
+func (t *UsageTracker) Reset() {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	t.overall = agentTotals{}
+	t.perAgent = make(map[string]*agentTotals, 4)
+	t.perModel = make(map[string]*agentTotals, 4)
+	t.missingAssistantUsage = 0
+	t.unpricedModels = make(map[string]int, 2)
+	t.cacheTrack = make(map[string]*cacheTrackState, 4)
+	t.mu.Unlock()
+	t.SaveNow()
+	if t.onCost != nil {
+		t.onCost(0)
+	}
+}
+
 // accumulate 把一条带 Usage 的消息累计到 overall / per-role / per-model 三份计数。
 // provider/model 为空表示"用当前 ModelSet 拿 role 对应模型"（实时路径）；非空表示
 // "强制按指定模型算价"（replay 路径用 session jsonl 里的 _meta）。
 // resolveCost 在锁外执行（它只读 modelSet/Registry），锁内只做加法。
 func (t *UsageTracker) accumulate(role, provider, modelName string, u agentcore.Usage) {
 	provider, modelName = t.effectiveModel(role, provider, modelName)
-	cost, saved, capable, priced := t.resolveCost(modelName, u)
+	cost, saved, capable, priced := t.resolveCost(provider, modelName, u)
 
 	var firstUnpriced string
 	t.mu.Lock()
@@ -294,6 +341,9 @@ func (t *UsageTracker) accumulate(role, provider, modelName string, u agentcore.
 	if firstUnpriced != "" {
 		slog.Warn("模型价格未收录，该模型消耗不计入成本与预算",
 			"module", "usage", "model", firstUnpriced)
+		if t.onMissingPricing != nil {
+			t.onMissingPricing(t.MissingPricing())
+		}
 	}
 	t.notifyDirty()
 	if t.onCost != nil {
@@ -453,6 +503,9 @@ func (t *UsageTracker) MissingPricing() []string {
 
 	out := keys[:0]
 	for _, key := range keys {
+		if t.hasPricingOverride(key) {
+			continue // 用户已声明定价覆盖（P7-3）
+		}
 		if entry, ok := models.DefaultRegistry().Resolve(key); ok &&
 			(entry.HasPricing || entry.InputCostPer1M > 0 || entry.OutputCostPer1M > 0) {
 			continue // 注册表已补到价格
@@ -723,12 +776,27 @@ func (t *UsageTracker) PerModel() []AgentUsage {
 }
 
 // resolveCost 同时返回本次消息的 cost / saved / capable。
-//   - cost: 注册表命中按 4 项累乘；未命中回落 provider 自带 cost
-//   - saved: 仅注册表命中、CacheRead > 0、且 InputCost > CacheReadCost 时 > 0
-//   - capable: 注册表命中且该模型 CacheReadCostPer1M > 0 → 已知支持 prompt caching
+//   - cost: 定价覆盖(P7-3)或注册表命中按 4 项累乘；未命中回落 provider 自带 cost
+//   - saved: 仅覆盖/注册表命中、CacheRead > 0、且 InputCost > CacheReadCost 时 > 0
+//   - capable: 覆盖/注册表命中且该模型 CacheReadCostPer1M > 0 → 已知支持 prompt caching
 //
 // modelName 优先用调用方传入的（replay 时来自 session jsonl 的 _meta.model）。
-func (t *UsageTracker) resolveCost(modelName string, u agentcore.Usage) (cost, saved float64, capable, priced bool) {
+// 定价覆盖按 "provider/model" 精确键 → "model" 裸键 → equivalent 等价模型依次查询。
+func (t *UsageTracker) resolveCost(provider, modelName string, u agentcore.Usage) (cost, saved float64, capable, priced bool) {
+	if t != nil {
+		if entry, ok := t.resolvePricingOverride(provider, modelName); ok {
+			c := computeCost(u, entry)
+			s := computeSaved(u, entry)
+			canCache := entry.CacheReadCostPer1M > 0
+			if c > 0 {
+				return c, s, canCache, true
+			}
+			// 覆盖条目已存在：无论本次算价是否为 0（免费模型），都视为"价格已知"。
+			if entry.HasPricing || entry.InputCostPer1M > 0 || entry.OutputCostPer1M > 0 {
+				priced = true
+			}
+		}
+	}
 	if entry, ok := models.DefaultRegistry().Resolve(modelName); ok {
 		c := computeCost(u, *entry)
 		s := computeSaved(u, *entry)
@@ -746,6 +814,57 @@ func (t *UsageTracker) resolveCost(modelName string, u agentcore.Usage) (cost, s
 		return u.Cost.Total, 0, false, priced || u.Cost.Total > 0
 	}
 	return 0, 0, false, priced
+}
+
+// resolvePricingOverride 按 config.pricing 查询覆盖条目：
+// "provider/model" 精确键 → "model" 裸键 → equivalent 等价模型（注册表再查一次）。
+func (t *UsageTracker) resolvePricingOverride(provider, modelName string) (models.ModelEntry, bool) {
+	if t == nil || len(t.pricingOverrides) == 0 || modelName == "" {
+		return models.ModelEntry{}, false
+	}
+	keys := []string{modelName}
+	if provider != "" {
+		keys = append([]string{provider + "/" + modelName}, keys...)
+	}
+	for _, key := range keys {
+		ov, ok := t.pricingOverrides[key]
+		if !ok {
+			continue
+		}
+		entry := models.ModelEntry{
+			ID:                  modelName,
+			InputCostPer1M:      ov.InputPer1M,
+			OutputCostPer1M:     ov.OutputPer1M,
+			CacheReadCostPer1M:  ov.CacheReadPer1M,
+			CacheWriteCostPer1M: ov.CacheWritePer1M,
+		}
+		if ov.InputPer1M > 0 || ov.OutputPer1M > 0 {
+			entry.HasPricing = true
+		}
+		return entry, true
+	}
+	// equivalent:按注册表某等价模型计费（单价全 0 时生效）。
+	for _, key := range keys {
+		ov, ok := t.pricingOverrides[key]
+		if !ok || ov.Equivalent == "" {
+			continue
+		}
+		if entry, ok := models.DefaultRegistry().Resolve(ov.Equivalent); ok {
+			return *entry, true
+		}
+	}
+	return models.ModelEntry{}, false
+}
+
+// hasPricingOverride 返回该模型键是否被定价覆盖（MissingPricing 重判时排除）。
+func (t *UsageTracker) hasPricingOverride(key string) bool {
+	if t == nil || len(t.pricingOverrides) == 0 {
+		return false
+	}
+	if _, ok := t.pricingOverrides[key]; ok {
+		return true
+	}
+	return false
 }
 
 // agentRoleName 把 subagent 名字归一到 role 名。

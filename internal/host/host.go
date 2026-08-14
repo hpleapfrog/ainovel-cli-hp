@@ -59,6 +59,9 @@ type Host struct {
 	// 避免高压下事件流/正文流缺内容而毫无信号。
 	droppedEvents atomic.Uint64
 	droppedDeltas atomic.Uint64
+	// onDroppedEvents 是"首次发生丢弃"的一次性浮出回调（事件流 + notify，P7-4）；
+	// h 构造后挂上,emitEvent/emitDelta 检测 0→1 跨点时调用。
+	onDroppedEvents func(events, deltas uint64)
 
 	mu         sync.Mutex
 	lifecycle  lifecycle
@@ -110,6 +113,8 @@ func New(cfg bootstrap.Config, bundle assets.Bundle) (*Host, error) {
 	slog.Info("模型就绪", "module", "boot", "summary", models.Summary())
 
 	usage := NewUsageTracker(models, store)
+	// 定价覆盖(P7-3):官方直连/自定义模型按 config.pricing 记账,优先于注册表。
+	usage.SetPricingOverrides(cfg.Pricing)
 	// 优先读 meta/usage.json；以下情况都走 sessions/*.jsonl 一次性回填：
 	//   - 文件不存在（首次持久化前）
 	//   - schema 版本不匹配（未来升级后丢弃旧格式）
@@ -132,12 +137,18 @@ func New(cfg bootstrap.Config, bundle assets.Bundle) (*Host, error) {
 	usageCtx, usageCancel := context.WithCancel(context.Background())
 	usage.StartAutoSave(usageCtx)
 
-	// onGuardBlock 前置声明:h 构造后才能挂事件浮出闭包。
+	// onGuardBlock / onFailover 前置声明:h 构造后才能挂事件浮出闭包。
 	var onGuardBlock func(agent, reason string, consecutive int32)
+	var onFailover func(ev bootstrap.FailoverEvent)
 	workers, askUser, restore, applyThinking := agents.BuildWorkers(cfg, store, models, bundle, usage.Record,
 		func(agent, reason string, consecutive int32) {
 			if onGuardBlock != nil {
 				onGuardBlock(agent, reason, consecutive)
+			}
+		},
+		func(ev bootstrap.FailoverEvent) {
+			if onFailover != nil {
+				onFailover(ev)
 			}
 		})
 	store.Signals.ClearStaleSignals()
@@ -164,6 +175,27 @@ func New(cfg bootstrap.Config, bundle assets.Bundle) (*Host, error) {
 	h.runCtx = agentcore.WithToolProgress(h.runCtx, h.observer.workerProgress)
 	if cfg.Notify.IsEnabled() {
 		h.notifier = notify.New(cfg.Notify.Command, cfg.Notify.Events)
+	}
+	// 系统健康度信号浮出(P7-4/P8-1):只告警、不介入控制流。
+	// failover=运行时降级事件;missing_pricing/dropped_events=失明/丢失信号,
+	// 无人值守时这些恰好需要"喊到屏幕之外"。
+	onFailover = func(ev bootstrap.FailoverEvent) {
+		body := fmt.Sprintf("%s 主模型 %s/%s 失败(%s)，已切到 fallback %s/%s",
+			ev.Role, ev.FromProvider, ev.FromModel, ev.Reason, ev.ToProvider, ev.ToModel)
+		h.emitEvent(Event{Time: time.Now(), Category: "SYSTEM", Agent: ev.Role, Summary: "provider 切换: " + body, Level: "warn"})
+		h.notifier.Send(notify.Notification{Kind: notify.KindFailover, Level: "warn", Title: "ainovel: provider 切换", Body: body})
+	}
+	if usage != nil {
+		usage.SetOnMissingPricing(func(models []string) {
+			body := fmt.Sprintf("以下模型价格未收录,成本与预算对其失明: %s。可在 config.json 的 pricing 段声明单价,或等待注册表刷新", strings.Join(models, "、"))
+			h.emitEvent(Event{Time: time.Now(), Category: "SYSTEM", Summary: "计费盲区: " + body, Level: "warn"})
+			h.notifier.Send(notify.Notification{Kind: notify.KindMissingPricing, Level: "warn", Title: "ainovel: 计费盲区", Body: body})
+		})
+	}
+	h.onDroppedEvents = func(events, deltas uint64) {
+		body := fmt.Sprintf("事件流/正文流在高压下丢弃过内容(事件 %d 次,正文增量 %d 次)——UI 显示可能缺失,但并非创作事实缺失", events, deltas)
+		h.emitEvent(Event{Time: time.Now(), Category: "SYSTEM", Summary: "事件流丢弃: " + body, Level: "warn"})
+		h.notifier.Send(notify.Notification{Kind: notify.KindDroppedEvents, Level: "warn", Title: "ainovel: 事件流丢弃", Body: body})
 	}
 	// 预算哨兵:Engine 在每轮循环边界直接调用 HandleBoundary(不再经事件订阅)。
 	if sentinel := NewBudgetSentinel(cfg.Budget,
@@ -307,14 +339,26 @@ func (h *Host) StartPrepared(rawRequirement string) error {
 	if rawRequirement == "" {
 		return fmt.Errorf("prompt is required")
 	}
-	if err := h.budget.Refuse(); err != nil {
-		return err
+	// 开新书 = 完整清场：只重置 progress 会让新书继承旧书的
+	// 时间线/伏笔/关系/状态台账/配角名册/章节文件/用量账本——
+	// 世界状态台账混入新书污染一致性检测与召回，旧用量让新书预算从旧成本起跳
+	// （"越写越多"事故同源）。预算/用量一并归零后 Refuse 才对新书成立。
+	if err := h.store.WipeBook(); err != nil {
+		return fmt.Errorf("清空旧书产物: %w", err)
 	}
-	if err := h.store.Checkpoints.Reset(); err != nil {
-		return fmt.Errorf("reset checkpoints: %w", err)
+	if err := h.store.RunMeta.ResetForNewBook(); err != nil {
+		return fmt.Errorf("重置运行事实: %w", err)
 	}
+	// 清场后重建初始进度(与清场前旧语义一致:UI/路由始终有 Progress 可读)。
 	if err := h.store.Progress.Init("", 0); err != nil {
 		return fmt.Errorf("init progress: %w", err)
+	}
+	h.usage.Reset()
+	if h.budget != nil {
+		h.budget.Reset()
+	}
+	if err := h.budget.Refuse(); err != nil {
+		return err
 	}
 	// 输入事实先于裁定落盘:裁定失败(模型故障等)后 StartPrompt 仍在,
 	// 恢复/继续时引擎据此补裁(planStartFallback),启动失败不再是死局。
@@ -357,6 +401,58 @@ func (h *Host) StartPrepared(rawRequirement string) error {
 		return fmt.Errorf("Engine 已在运行或正在停止，无法启动新书")
 	}
 	return nil
+}
+
+// healProgressAfterReset 修复旧版 StartPrepared 半重置造成的历史损伤：
+//  1. 分层书被重置（Layered=false 而 layered_outline.json 仍在）→ 恢复分层模式、
+//     当前卷弧与总章数——否则书被错误地当非分层书处理，卷弧结构成孤儿；
+//  2. 非分层书 TotalChapters 清零 → 从扁平大纲长度推导补回；
+//  3. 非分层书已完成章节已越过计划总章数 → 直接完结（继续只会越写越多）。
+//
+// 返回自愈描述列表（空=无需修复）。纯事实修复：只读大纲文件推导、只写 Progress，
+// 不做语义判断。
+func healProgressAfterReset(st *storepkg.Store) []string {
+	p, err := st.Progress.Load()
+	if err != nil || p == nil || p.Phase != domain.PhaseWriting {
+		return nil
+	}
+	var repaired []string
+
+	if !p.Layered {
+		// layered_outline 的存在是分层书的判定事实，比 Progress 字段更可靠。
+		if volumes, verr := st.Outline.LoadLayeredOutline(); verr == nil && len(volumes) > 0 {
+			if err := st.Progress.SetLayered(true); err == nil {
+				if v, a, lerr := st.Outline.LocateChapter(p.LatestCompleted()); lerr == nil {
+					_ = st.Progress.UpdateVolumeArc(v, a)
+				}
+				repaired = append(repaired, fmt.Sprintf("分层模式丢失已恢复（%d 卷）", len(volumes)))
+				p.Layered = true
+			}
+		}
+	}
+	if p.TotalChapters <= 0 {
+		if p.Layered {
+			if volumes, verr := st.Outline.LoadLayeredOutline(); verr == nil {
+				total := domain.TotalChapters(volumes)
+				if err := st.Progress.SetTotalChapters(total); err == nil {
+					repaired = append(repaired, fmt.Sprintf("分层总章数补回为 %d 章", total))
+					p.TotalChapters = total
+				}
+			}
+		} else if o, oerr := st.Outline.LoadOutline(); oerr == nil && len(o) > 0 {
+			if err := st.Progress.SetTotalChapters(len(o)); err == nil {
+				repaired = append(repaired, fmt.Sprintf("总章数从大纲推导补回为 %d 章", len(o)))
+				p.TotalChapters = len(o)
+			}
+		}
+	}
+	if !p.Layered && p.TotalChapters > 0 && len(p.CompletedChapters) >= p.TotalChapters {
+		if err := st.Progress.MarkComplete(); err == nil {
+			repaired = append(repaired,
+				fmt.Sprintf("已完成 %d 章、计划 %d 章，本书按大纲完结", len(p.CompletedChapters), p.TotalChapters))
+		}
+	}
+	return repaired
 }
 
 // startEngine 统一的引擎启动入口(Start/Resume/Continue/干预重启共用)。
@@ -404,6 +500,17 @@ func (h *Host) Resume() (string, error) {
 	}
 	if err := h.budget.Refuse(); err != nil {
 		return "", err
+	}
+
+	// 自愈：旧版 StartPrepared 半重置造成的历史损伤（带 prompt 重启把进度清零而
+	// 设定文件仍在盘上）——非分层书的 TotalChapters 清零会让完结闸门永不触发
+	// （已知事故：12 章大纲写了 29 章）；分层书被重置后 Layered=false 会让
+	// layered_outline 成为孤儿、书被错误地当非分层书处理。此处按事实修复并
+	// 已写越界（非分层 completed >= total）时直接完结。
+	for _, summary := range healProgressAfterReset(h.store) {
+		slog.Warn("自愈: "+summary, "module", "host")
+		h.emitEvent(Event{Time: time.Now(), Category: "SYSTEM",
+			Summary: "自愈: " + summary, Level: "warn"})
 	}
 
 	slog.Info("恢复创作", "module", "host", "label", label)
@@ -822,14 +929,24 @@ func (h *Host) emitEvent(ev Event) {
 	default:
 		select {
 		case <-h.events:
-			h.droppedEvents.Add(1)
+			h.noteDropped(h.droppedEvents.Add(1), h.droppedDeltas.Load())
 		default:
 		}
 		select {
 		case h.events <- ev:
 		default:
-			h.droppedEvents.Add(1)
+			h.noteDropped(h.droppedEvents.Add(1), h.droppedDeltas.Load())
 		}
+	}
+}
+
+// noteDropped 在丢弃计数 0→1 跨点时触发一次浮出回调（之后累计但不重复告警）。
+func (h *Host) noteDropped(events, deltas uint64) {
+	if h == nil || h.onDroppedEvents == nil {
+		return
+	}
+	if events+deltas == 1 {
+		h.onDroppedEvents(events, deltas)
 	}
 }
 
@@ -840,13 +957,13 @@ func (h *Host) emitDelta(delta string) {
 	default:
 		select {
 		case <-h.streamCh:
-			h.droppedDeltas.Add(1)
+			h.noteDropped(h.droppedEvents.Load(), h.droppedDeltas.Add(1))
 		default:
 		}
 		select {
 		case h.streamCh <- delta:
 		default:
-			h.droppedDeltas.Add(1)
+			h.noteDropped(h.droppedEvents.Load(), h.droppedDeltas.Add(1))
 		}
 	}
 }

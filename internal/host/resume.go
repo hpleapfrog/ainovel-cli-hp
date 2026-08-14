@@ -30,15 +30,18 @@ func describeResume(store *storepkg.Store, progress *domain.Progress) string {
 		return fmt.Sprintf("恢复：规划阶段（%s）", progress.Phase)
 	case domain.PhaseWriting:
 		// 优先级与 Router 的决策优先级对齐，让 label 与即将派发的指令一致。
-		if pending, _ := store.Signals.LoadPendingCommit(); pending != nil {
-			return fmt.Sprintf("恢复：第 %d 章提交中断", pending.Chapter)
-		}
+		// Router 里返工队列是绝对最高优先级（PendingCommit 不是 Route 输入事实），
+		// 因此队列判断必须先于提交中断——两者并存时恢复后的第一条指令是
+		// writer 处理队列头，而不是恢复提交。
 		if len(progress.PendingRewrites) > 0 {
 			verb := "重写"
 			if progress.Flow == domain.FlowPolishing {
 				verb = "打磨"
 			}
 			return fmt.Sprintf("%s恢复：%d 章待处理", verb, len(progress.PendingRewrites))
+		}
+		if pending, _ := store.Signals.LoadPendingCommit(); pending != nil {
+			return fmt.Sprintf("恢复：第 %d 章提交中断", pending.Chapter)
 		}
 		if progress.Flow == domain.FlowReviewing {
 			return "恢复：审阅中断"

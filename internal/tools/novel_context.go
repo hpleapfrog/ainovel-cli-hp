@@ -92,6 +92,9 @@ func (t *ContextTool) Execute(_ context.Context, args json.RawMessage) (json.Raw
 		t.buildBaseContext(result, warn)
 		seed := newChapterContextEnvelope()
 		state := t.prepareChapterContext(a.Chapter, &seed, warn)
+		// 世界观分级召回（W6 机械版）：规则超阈值时按本章相关性筛选注入视图，
+		// 硬约束恒保留；台账事实不受影响。
+		t.applyWorldRulesTrim(result, a.Chapter)
 		seed.apply(result)
 		t.buildChapterContext(result, state, warn)
 		// 该章的机械违规事实(commit 时按 user_rules 检查并落盘):
@@ -103,6 +106,11 @@ func (t *ContextTool) Execute(_ context.Context, args json.RawMessage) (json.Raw
 		// 与 rule_violations 同管道,editor 评审该章时消费。
 		if issues := t.store.World.LoadContinuityIssues(a.Chapter); issues != nil {
 			result["continuity_issues"] = issues
+		}
+		// writer 的自审结论(report_consistency 落盘):editor 评审该章时回溯
+		// "writer 当时认为哪些地方可疑";writer 返工重写时也能看到上一轮结论。
+		if rec := t.store.World.LoadConsistencyCheck(a.Chapter); rec != nil {
+			result["consistency_check"] = rec
 		}
 		// 数据语义标注（治复读交代）：episodic 是已写入正文的备忘，不是待写素材。
 		// 只挂容器内，不进顶层镜像。

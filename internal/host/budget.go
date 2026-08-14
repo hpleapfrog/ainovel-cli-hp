@@ -91,6 +91,18 @@ func (s *BudgetSentinel) OnCost(total float64) {
 	}
 }
 
+// Reset 复位全部预算状态（StartPrepared 开新书时调用）：
+// 预算是单本书钱包政策，新书从零起算。
+func (s *BudgetSentinel) Reset() {
+	if s == nil {
+		return
+	}
+	s.state.Store(budgetNormal)
+	s.lastTotal.Store(0)
+	s.zeroStreak.Store(0)
+	s.blindWarned.Store(false)
+}
+
 // HandleBoundary 在子代理边界执行待定的停机，由 Engine 在循环边界直接调用。
 // 返回 true 表示本次边界执行了停机。
 func (s *BudgetSentinel) HandleBoundary() bool {

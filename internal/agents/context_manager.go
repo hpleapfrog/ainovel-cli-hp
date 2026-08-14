@@ -5,6 +5,7 @@ import (
 
 	"github.com/voocel/agentcore"
 	corecontext "github.com/voocel/agentcore/context"
+	"github.com/voocel/ainovel-cli/internal/agents/ctxpack"
 )
 
 // contextManagerConfig 聚合 ContextManager 的全部配置参数。
@@ -57,6 +58,8 @@ func newContextManager(cfg contextManagerConfig) *corecontext.ContextEngine {
 
 // contextRewriteCallback 创建上下文重写的日志回调。
 // 新架构简化为只写 slog,不再写 runtime queue 和 UIEvent。
+// store_summary 策略借 SummaryInfo.Duration 携带的压缩健康标记在此解码为独立
+// 属性 compact_health(P6-3):marker 值不再是真实耗时,不进 duration_ms 口径。
 func contextRewriteCallback(agent string) func(corecontext.RewriteEvent) {
 	return func(ev corecontext.RewriteEvent) {
 		attrs := []any{
@@ -74,8 +77,12 @@ func contextRewriteCallback(agent string) func(corecontext.RewriteEvent) {
 				"msgs_after", info.MessagesAfter,
 				"compacted", info.CompactedCount,
 				"kept", info.KeptCount,
-				"duration_ms", info.Duration.Milliseconds(),
 			)
+			if health, ok := ctxpack.DecodeCompactHealth(info.Duration); ok {
+				attrs = append(attrs, "compact_health", health)
+			} else {
+				attrs = append(attrs, "duration_ms", info.Duration.Milliseconds())
+			}
 		}
 		slog.Warn("上下文重写", attrs...)
 	}

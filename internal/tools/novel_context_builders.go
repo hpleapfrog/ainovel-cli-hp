@@ -8,6 +8,7 @@ import (
 
 	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/rules"
+	storepkg "github.com/voocel/ainovel-cli/internal/store"
 	"github.com/voocel/ainovel-cli/internal/stylestat"
 )
 
@@ -197,6 +198,124 @@ func (t *ContextTool) buildBaseContext(result map[string]any, warn func(string, 
 	} else {
 		warn("world_rules", err)
 	}
+	// 势力/地点档案（W1）：数量小，全量注入；题材未落盘时缺省。
+	if factions, err := t.store.World.LoadFactions(); err == nil && len(factions) > 0 {
+		result["factions"] = factions
+	} else {
+		warn("factions", err)
+	}
+	if locations, err := t.store.World.LoadLocations(); err == nil && len(locations) > 0 {
+		result["locations"] = locations
+	} else {
+		warn("locations", err)
+	}
+}
+
+// ── 世界观分级召回（W6 机械版，Bishu trimmer 思想）──
+//
+// 长篇几百章后世界规则膨胀，全量注入撑爆上下文。本函数按「当前章相关性」做
+// 确定性筛选：硬约束（HardConstraint）恒保留；其余规则按与本章大纲/计划的
+// 关键词（CJK bigram）重叠排序，取前 N。只影响 novel_context 注入视图，
+// 不碰台账事实——check_consistency 仍返回全量（writer 核对兜底），
+// architect 路径（foundation_memory）也保持全量。
+
+const (
+	// worldRulesTrimThreshold 超过该条数才启用筛选——少量规则不值得冒遗漏风险。
+	worldRulesTrimThreshold = 40
+	// worldRulesTrimCap 筛选后最多注入的规则条数。
+	worldRulesTrimCap = 30
+)
+
+// applyWorldRulesTrim 在 chapter 路径上按本章内容筛选 world_rules 注入视图。
+// 无裁剪时不产生任何副作用（视图与全量一致）。
+func (t *ContextTool) applyWorldRulesTrim(result map[string]any, chapter int) {
+	rulesRaw, ok := result["world_rules"].([]domain.WorldRule)
+	if !ok || len(rulesRaw) <= worldRulesTrimThreshold {
+		return
+	}
+	keywords := chapterKeywordBigrams(t.store, chapter)
+
+	type scoredRule struct {
+		rule  domain.WorldRule
+		index int
+		hit   bool
+	}
+	scored := make([]scoredRule, 0, len(rulesRaw))
+	for i, r := range rulesRaw {
+		hit := r.HardConstraint != nil
+		if !hit && len(keywords) > 0 {
+			haystack := r.Rule + r.Essence + r.Boundary
+			for kw := range keywords {
+				if strings.Contains(haystack, kw) {
+					hit = true
+					break
+				}
+			}
+		}
+		scored = append(scored, scoredRule{rule: r, index: i, hit: hit})
+	}
+
+	kept := make([]domain.WorldRule, 0, worldRulesTrimCap)
+	// 第一轮：硬约束 + 相关规则（保持台账原始顺序）
+	for _, s := range scored {
+		if s.hit && len(kept) < worldRulesTrimCap {
+			kept = append(kept, s.rule)
+		}
+	}
+	// 第二轮：仍不足 cap 时按原始顺序补齐，保证视图不空
+	for _, s := range scored {
+		if len(kept) >= worldRulesTrimCap {
+			break
+		}
+		if !s.hit {
+			kept = append(kept, s.rule)
+		}
+	}
+	result["world_rules"] = kept
+	result["world_rules_trimmed"] = map[string]any{
+		"kept": len(kept), "total": len(rulesRaw),
+	}
+}
+
+// chapterKeywordBigrams 提取本章大纲与计划的中文二字词组（相关性判定的关键词）。
+// 取不到任何大纲/计划时返回空集合（调用方据此跳过相关性筛选，只保硬约束）。
+func chapterKeywordBigrams(st *storepkg.Store, chapter int) map[string]bool {
+	var text strings.Builder
+	if e, err := st.Outline.GetChapterOutline(chapter); err == nil && e != nil {
+		text.WriteString(e.Title)
+		text.WriteString(e.CoreEvent)
+		text.WriteString(e.Hook)
+		for _, sc := range e.Scenes {
+			text.WriteString(sc)
+		}
+	}
+	if plan, err := st.Drafts.LoadChapterPlan(chapter); err == nil && plan != nil {
+		text.WriteString(plan.Title)
+		text.WriteString(plan.Goal)
+		text.WriteString(plan.Conflict)
+		text.WriteString(plan.Hook)
+		text.WriteString(plan.Notes)
+		for _, b := range plan.Contract.RequiredBeats {
+			text.WriteString(b)
+		}
+		for _, c := range plan.Contract.ContinuityChecks {
+			text.WriteString(c)
+		}
+	}
+	raw := text.String()
+	out := make(map[string]bool)
+	runes := []rune(raw)
+	for i := 0; i+1 < len(runes); i++ {
+		a, b := runes[i], runes[i+1]
+		if isCJK(a) && isCJK(b) {
+			out[string([]rune{a, b})] = true
+		}
+	}
+	return out
+}
+
+func isCJK(r rune) bool {
+	return r >= 0x4e00 && r <= 0x9fff
 }
 
 func (t *ContextTool) prepareChapterContext(chapter int, envelope *chapterContextEnvelope, warn func(string, error)) contextBuildState {
@@ -689,6 +808,17 @@ func (t *ContextTool) buildArchitectFoundation(envelope *architectContextEnvelop
 		envelope.Foundation["world_rules"] = rules
 	} else {
 		warn("world_rules", err)
+	}
+	// 势力/地点档案（W1）：架构师结构操作（展开弧/追加卷）时必须能看到水下世界现状。
+	if factions, err := t.store.World.LoadFactions(); err == nil && len(factions) > 0 {
+		envelope.Foundation["factions"] = factions
+	} else {
+		warn("factions", err)
+	}
+	if locations, err := t.store.World.LoadLocations(); err == nil && len(locations) > 0 {
+		envelope.Foundation["locations"] = locations
+	} else {
+		warn("locations", err)
 	}
 	if foreshadow, err := t.store.World.LoadActiveForeshadow(); err == nil && len(foreshadow) > 0 {
 		envelope.Foundation["foreshadow_ledger"] = foreshadowWithDormancy(foreshadow, t.currentChapterHint())

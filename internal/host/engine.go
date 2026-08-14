@@ -267,6 +267,7 @@ func (e *engine) planStartFallback(ctx context.Context) *flow.Instruction {
 			Agent:  meta.PlanStart.Planner,
 			Task:   meta.PlanStart.PlannerTask,
 			Reason: "按已固化的启动裁定开始规划",
+			Key:    "architect:plan_start",
 		}
 	}
 	if meta.StartPrompt == "" {
@@ -306,7 +307,7 @@ func (e *engine) retryPlanStart(ctx context.Context, prompt string) *flow.Instru
 	}
 	e.emitEvent(Event{Time: time.Now(), Category: "SYSTEM", Level: "info",
 		Summary: fmt.Sprintf("启动裁定已补齐(规划师: %s——%s)", decision.Planner, decision.Reason)})
-	return &flow.Instruction{Agent: decision.Planner, Task: decision.Task, Reason: decision.Reason}
+	return &flow.Instruction{Agent: decision.Planner, Task: decision.Task, Reason: decision.Reason, Key: "architect:plan_start"}
 }
 
 // precheck 是原 ToolGate 的确定性化身:不合法的派发直接改写,无需教学文案。
@@ -326,6 +327,7 @@ func (e *engine) precheck(inst *flow.Instruction) *flow.Instruction {
 					Agent:  domain.WorkerArchitectLong,
 					Task:   fmt.Sprintf("下一弧为骨架(%s)。调用 save_foundation(type=expand_arc) 展开下一弧;若当前卷已写完,改用 type=append_volume 追加并展开下一卷。", err),
 					Reason: "写作目标章未展开,先展开再续写",
+					Key:    "architect:expand_arc:precheck",
 				}
 			}
 		}
@@ -346,7 +348,19 @@ func writerTargetChapter(st *storepkg.Store) int {
 	return progress.NextChapter()
 }
 
-// trackDeadlock 维护僵局计数：连续出现同一 Agent+Task 说明上一轮
+// controlKey 生成控制面僵局/重试去重键：优先用结构化 Key（与 Task 文案解耦，
+// 措辞调整不再清零僵局计数），缺失时（历史数据 / Arbiter 裁定派单）退回 Task。
+func controlKey(in *flow.Instruction) string {
+	if in == nil {
+		return ""
+	}
+	if in.Key != "" {
+		return in.Agent + "\x00" + in.Key
+	}
+	return in.Agent + "\x00" + in.Task
+}
+
+// trackDeadlock 维护僵局计数：连续出现同一控制面键说明上一轮
 // 没有满足路由后置条件。Worker 内部的 plan/draft/edit 等中间 checkpoint
 // 只用于恢复和观测，不能重置 Engine 级计数（issue #84）。
 // repeats 达阈值时咨询 Arbiter，硬上限直接熔断。
@@ -357,7 +371,7 @@ func (e *engine) trackDeadlock(ctx context.Context, inst **flow.Instruction) (st
 		*inst = nil
 		return false
 	}
-	key := in.Agent + "\x00" + in.Task
+	key := controlKey(in)
 	if key == e.lastKey {
 		e.repeats++
 	} else {
@@ -434,7 +448,7 @@ func (e *engine) handleWorkerError(ctx context.Context, inst *flow.Instruction, 
 		return true
 	}
 
-	key := inst.Agent + "\x00" + inst.Task
+	key := controlKey(inst)
 	if e.failedKey != key {
 		// 首败:原指令重试一次(下一轮 Route 重算,事实驱动天然幂等)。
 		e.failedKey = key

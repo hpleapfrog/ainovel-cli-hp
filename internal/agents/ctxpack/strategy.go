@@ -11,6 +11,31 @@ import (
 
 const storeSummaryStrategyName = "store_summary"
 
+// ── 压缩健康标记 ──
+//
+// 本策略零 LLM,真实耗时可忽略;agentcore 的 StrategyResult/SummaryInfo 尚无专用
+// 健康字段(与上游协调中,P6-3),暂借 SummaryInfo.Duration 承载语义标记——
+// 常量集中在此,消费端(contextRewriteCallback)按 marker 解码为独立日志属性
+// compact_health,Duration 不再参与任何真实耗时统计口径:
+//   - CompactHealthHealthy:压缩后 tokensAfter 已回落到阈值下(或本就无需再压)
+//   - CompactHealthTight:压缩后仍超阈值——预算紧张,下一轮可能还要继续压
+const (
+	CompactHealthHealthy = time.Millisecond
+	CompactHealthTight   = 2 * time.Millisecond
+)
+
+// DecodeCompactHealth 把 Duration 字段解回健康标记;非标记值(真实耗时)返回 false。
+func DecodeCompactHealth(d time.Duration) (string, bool) {
+	switch d {
+	case CompactHealthHealthy:
+		return "healthy", true
+	case CompactHealthTight:
+		return "budget_tight", true
+	default:
+		return "", false
+	}
+}
+
 type StoreSummaryCompactConfig struct {
 	Store              *store.Store
 	KeepRecentTokens   int
@@ -91,12 +116,6 @@ func (s *StoreSummaryCompactStrategy) apply(_ context.Context, msgs []agentcore.
 		return msgs, corecontext.StrategyResult{Name: s.Name()}, nil
 	}
 
-	// Duration 不承载真实耗时：本策略摘要是本地 store 读取拼接，无 LLM 调用，
-	// 耗时可忽略（agentcore 对 0 值也会兜底成 1ms）。这里借该字段经
-	// context_manager 的 duration_ms 日志通道携带压缩结果标记：
-	//   - 1ms：压缩后 tokensAfter 已回落到阈值之下（或本就无需再压）；
-	//   - 2ms：压缩后 tokensAfter 仍超阈值——预算紧张，下一轮可能还要继续压，
-	//     日志里可与"健康压缩"区分开。
 	// ForceApply 不走 Apply 入口的阈值预检，故"仍超阈"判定要自带 budget.Tokens > Threshold 前提。
 	info := &corecontext.SummaryInfo{
 		TokensBefore:   tokensBefore,
@@ -107,10 +126,10 @@ func (s *StoreSummaryCompactStrategy) apply(_ context.Context, msgs []agentcore.
 		KeptCount:      len(toKeep),
 		IsSplitTurn:    cut.isSplitTurn,
 		SummaryLen:     len([]rune(summary)),
-		Duration:       time.Millisecond,
+		Duration:       CompactHealthHealthy,
 	}
 	if budget.Tokens > budget.Threshold && tokensAfter > budget.Threshold {
-		info.Duration = 2 * time.Millisecond
+		info.Duration = CompactHealthTight
 	}
 
 	return result, corecontext.StrategyResult{
