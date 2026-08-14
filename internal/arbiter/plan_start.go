@@ -34,10 +34,13 @@ type planStartPayload struct {
 	Style       string `json:"style,omitempty"`
 }
 
+// planStartSchemaHint 是重试反馈携带的目标形状(字段清单 + 最小样例)。
+const planStartSchemaHint = `{"planner": string(必填, 枚举 architect_long|architect_short), "task": string(必填, 交给规划师的完整任务文本), "reason": string(必填)}。最小样例: {"planner": "architect_long", "task": "...", "reason": "..."}`
+
 // DecidePlanStart 启动裁定:根据用户需求选规划师;需求过短(<20 字)时在 task 里
 // 自主补充差异化方向、目标读者与核心消费点、至少一个非常规钩子。
 // 失败语义:返回 error → 调用方显式报错中止启动(启动期用户在场,报错优于猜测)。
 func DecidePlanStart(ctx context.Context, model agentcore.ChatModel, systemPrompt, requirement, style string) (PlanStartDecision, error) {
 	payload := marshalPayload(planStartPayload{Requirement: requirement, Style: style})
-	return decide(ctx, model, systemPrompt, payload, (*PlanStartDecision).Validate)
+	return decide(ctx, model, systemPrompt, payload, (*PlanStartDecision).Validate, planStartSchemaHint)
 }

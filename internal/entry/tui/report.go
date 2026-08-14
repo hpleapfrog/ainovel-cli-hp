@@ -169,6 +169,25 @@ func renderReportText(report diag.Report, width int, exportPath string, startedA
 		b.WriteString("\n")
 	}
 
+	// 第四行：追加式台账指标（数据先行：体积/条目随章节线性增长，是归档压缩决策依据）
+	if st.StateChangeCount > 0 || st.TimelineCount > 0 || st.AppendOnlyBytes > 0 {
+		b.WriteString(mutedStyle.Render("台账 "))
+		b.WriteString(fmt.Sprintf("状态%d条 时间线%d条", st.StateChangeCount, st.TimelineCount))
+		if st.AppendOnlyBytes > 0 {
+			mb := float64(st.AppendOnlyBytes) / (1024 * 1024)
+			level := dimStyle
+			if st.AppendOnlyBytes > 10*1024*1024 {
+				level = lipgloss.NewStyle().Foreground(colorReview) // >10MB 提示考虑归档
+			}
+			b.WriteString(mutedStyle.Render("  体积 "))
+			b.WriteString(level.Render(fmt.Sprintf("%.1fMB", mb)))
+			if st.AppendOnlyBytes > 10*1024*1024 {
+				b.WriteString(dimStyle.Render("（大台账建议归档压缩）"))
+			}
+		}
+		b.WriteString("\n")
+	}
+
 	// 发现
 	b.WriteString("\n")
 	findings := report.Findings

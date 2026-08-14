@@ -33,6 +33,10 @@ const (
 	KindPlanStart     = "plan_start"
 	KindDeadlock      = "deadlock"
 	KindWorkerFailure = "worker_failure"
+	// 以下为「系统健康度」类事件（P7-4/P8-1）：同样是纯告警、不介入控制流。
+	KindFailover       = "failover"        // provider 显式切换（运行时降级事件）
+	KindMissingPricing = "missing_pricing" // 记账时无法解析价格的模型（成本/预算对该模型失明）
+	KindDroppedEvents  = "dropped_events"  // UI 事件流/正文流在高压下丢弃过内容
 )
 
 // Kinds 返回当前版本可用于 notify.events 的全部事件名。
@@ -46,6 +50,9 @@ func Kinds() []string {
 		KindPlanStart,
 		KindDeadlock,
 		KindWorkerFailure,
+		KindFailover,
+		KindMissingPricing,
+		KindDroppedEvents,
 	}
 }
 

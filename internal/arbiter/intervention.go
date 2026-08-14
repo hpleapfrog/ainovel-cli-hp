@@ -154,6 +154,9 @@ func (d *InterventionDecision) ValidateAgainst(f InterventionFacts) error {
 	return nil
 }
 
+// interventionSchemaHint 是重试反馈携带的目标形状(字段清单 + 最小样例)。
+const interventionSchemaHint = `{"answer": string(可选, 回给用户的自然语言), "rules": string(可选, 用户规则原文), "hold": 可选对象{"cancel": bool, "after": string(枚举 boundary|rewrites_drained), "reason": string}, "reopen": 可选对象{"chapters": int数组, "reason": string}, "dispatch": 可选对象{"agent": string(枚举 architect_long|architect_short|writer|editor), "task": string(非空)}, "reason": string(必填)}。至少要有一个动作或 answer。最小样例: {"answer": "...", "reason": "..."}`
+
 // DecideIntervention 干预分诊。失败语义:返回 error → 调用方回显"未能理解"
 // 且不产生任何写入(宁可不动,不可误动)。
 func DecideIntervention(ctx context.Context, model agentcore.ChatModel, systemPrompt string, facts InterventionFacts, text string) (InterventionDecision, error) {
@@ -163,7 +166,7 @@ func DecideIntervention(ctx context.Context, model agentcore.ChatModel, systemPr
 	}{Intervention: text, Facts: facts})
 	return decide(ctx, model, systemPrompt, payload, func(d *InterventionDecision) error {
 		return d.ValidateAgainst(facts)
-	})
+	}, interventionSchemaHint)
 }
 
 func truncateRunes(s string, n int) string {

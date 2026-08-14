@@ -2,6 +2,7 @@ package host
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/voocel/agentcore"
@@ -60,5 +61,66 @@ func TestCoCreateStream_SkipsRecordWithoutUsage(t *testing.T) {
 	_, input, output, _, _ := tk.Totals()
 	if input != 0 || output != 0 {
 		t.Fatalf("no-usage response should not accumulate, got input:%d output:%d", input, output)
+	}
+}
+
+// ── 结构化 JSON 协议（P4-10）──
+
+func TestParseCoCreateResponse_StructuredJSON(t *testing.T) {
+	raw := "```json\n{\"reply\": \"好，我们开始。\", \"draft\": \"## 主题\\n- 悬疑\\n- 都市\", \"ready\": true, \"suggestions\": [\"我想写仙侠\", \"换个方向\"]}\n```"
+	got, err := parseCoCreateResponse(raw)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if got.Message != "好，我们开始。" {
+		t.Fatalf("reply = %q", got.Message)
+	}
+	if !strings.Contains(got.Prompt, "## 主题") || !strings.Contains(got.Prompt, "\n- 悬疑") {
+		t.Fatalf("draft escapes not decoded: %q", got.Prompt)
+	}
+	if !got.Ready {
+		t.Fatal("ready should be true")
+	}
+	if len(got.Suggestions) != 2 || got.Suggestions[0] != "我想写仙侠" {
+		t.Fatalf("suggestions = %v", got.Suggestions)
+	}
+}
+
+func TestParseCoCreateResponse_XMLFallbackStillWorks(t *testing.T) {
+	raw := "<reply>好</reply>\n<draft>## 主题\n- 悬疑</draft>\n<ready>false</ready>\n<suggestions>\n- 我想写仙侠\n</suggestions>"
+	got, err := parseCoCreateResponse(raw)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if got.Message != "好" || !strings.Contains(got.Prompt, "## 主题") || got.Ready {
+		t.Fatalf("xml fallback wrong: %+v", got)
+	}
+	if len(got.Suggestions) != 1 || got.Suggestions[0] != "我想写仙侠" {
+		t.Fatalf("suggestions = %v", got.Suggestions)
+	}
+}
+
+func TestParseCoCreateResponse_BrokenJSONFallsBackToText(t *testing.T) {
+	raw := `{"reply": "好", "draft": "未转义
+换行会破坏 JSON"}`
+	got, err := parseCoCreateResponse(raw)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	// 非法 JSON → XML 也解析不出 → 整段作为 reply,不丢显示。
+	if got.Message == "" {
+		t.Fatal("reply must not be empty after fallback")
+	}
+}
+
+func TestExtractReplyPreview_JSONAndXML(t *testing.T) {
+	if got := extractReplyPreview(`{"reply": "好，我们开`); got != "好，我们开" {
+		t.Fatalf("partial JSON preview = %q", got)
+	}
+	if got := extractReplyPreview(`{"reply": "好\n吗", "draft": "x"}`); got != "好\n吗" {
+		t.Fatalf("closed JSON preview = %q", got)
+	}
+	if got := extractReplyPreview("<reply>好</reply><draft>x</draft>"); got != "好" {
+		t.Fatalf("xml preview = %q", got)
 	}
 }

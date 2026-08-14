@@ -162,6 +162,16 @@
   //   "hard_stop": false
   // },
 
+  // 可选。模型定价覆盖：官方直连 / 自定义模型不在 OpenRouter 注册表（或注册表价
+  // 含抽成与直连价不一致）时，在此声明 $/1M token 单价，记账与预算优先用它。
+  //   键       "模型名" 或 "provider/model"（键不同时，后者优先）。
+  //   单价字段  0 = 不覆盖该项；四个单价全 0 时可只写 equivalent 声明
+  //            "按注册表某等价模型计费"（等价模型名逐字对应 registry）。
+  // "pricing": {
+  //   "my-company/novel-70b": { "input_per_1m": 2.5, "output_per_1m": 7.5 },
+  //   "anthropic/claude-sonnet-4-5": { "equivalent": "claude-sonnet-4-5" }
+  // },
+
   // 可选。无人值守告警，缺省启用（Windows 通知 / macOS osascript / Linux notify-send）。
   //   enabled  缺省 true；设 false 关闭全部告警。
   //   command  可选。配置后改走自定义命令（手机推送走这里）：字段经环境变量
@@ -169,12 +179,13 @@
   //            完整 JSON 同时写 stdin。Unix shell 用 $NOTIFY_TITLE；
   //            Windows PowerShell 用 $env:NOTIFY_TITLE。
   //   events   可选。按事件类型过滤：run_end / budget / advance_gate / stop_guard /
-  //            plan_start / deadlock / worker_failure；缺省全部开启。
+  //            plan_start / deadlock / worker_failure / failover / missing_pricing /
+  //            dropped_events；缺省全部开启。
   // "notify": {
   //   "enabled": true,
   //   // 标题/正文含中文与空格，必须经 --data-urlencode 传参，不可拼进 URL 路径或 HTTP 头。
   //   // Bark (iOS):         "command": "curl -s --data-urlencode \"title=$NOTIFY_TITLE\" --data-urlencode \"body=$NOTIFY_BODY\" https://api.day.app/<key>"
   //   // ntfy (iOS/Android): "command": "curl -s -G --data-urlencode \"title=$NOTIFY_TITLE\" --data-urlencode \"message=$NOTIFY_BODY\" ntfy.sh/<topic>/publish"
-  //   "events": ["run_end", "budget", "advance_gate", "stop_guard", "plan_start", "deadlock", "worker_failure"]
+  //   "events": ["run_end", "budget", "advance_gate", "stop_guard", "plan_start", "deadlock", "worker_failure", "failover", "missing_pricing", "dropped_events"]
   // }
 }

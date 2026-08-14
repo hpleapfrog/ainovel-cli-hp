@@ -47,8 +47,11 @@ func (d *FailureDecision) Validate() error {
 	}
 }
 
+// failureSchemaHint 是重试反馈携带的目标形状(字段清单 + 最小样例)。
+const failureSchemaHint = `{"action": string(必填, 枚举 retry|reroute|abort), "reason": string(必填), "dispatch": 可选对象{"agent": string(枚举 architect_long|architect_short|writer|editor), "task": string(必填, 非空)}}。reroute 必须带 dispatch。最小样例: {"action": "retry", "reason": "..."}`
+
 // DecideFailure 失败/僵局咨询。失败语义:返回 error → Engine 按最保守路径处理
 // (暂停 + notify),绝不无限咨询。
 func DecideFailure(ctx context.Context, model agentcore.ChatModel, systemPrompt string, facts FailureFacts) (FailureDecision, error) {
-	return decide(ctx, model, systemPrompt, marshalPayload(facts), (*FailureDecision).Validate)
+	return decide(ctx, model, systemPrompt, marshalPayload(facts), (*FailureDecision).Validate, failureSchemaHint)
 }

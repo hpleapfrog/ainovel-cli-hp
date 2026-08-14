@@ -178,6 +178,24 @@ type Config struct {
 
 	// Notify 无人值守告警配置；缺省启用（system 通道兜底）。
 	Notify NotifyConfig `json:"notify,omitzero"`
+
+	// Pricing 模型定价覆盖（P7-3）：官方直连/自定义模型不在 OpenRouter 注册表时，
+	// 或注册表价格（含抽成）与直连价不一致时，在此声明 $/1M token 单价。
+	// 键为 "模型名" 或 "provider/model"（含 provider 键时更精确），
+	// 或 "equivalent": 声明"按注册表某等价模型计费"。记账时优先于注册表查询。
+	Pricing map[string]PricingOverride `json:"pricing,omitempty"`
+}
+
+// PricingOverride 单个模型的定价覆盖（单位 $/1M tokens，0=不覆盖该项）。
+type PricingOverride struct {
+	InputPer1M      float64 `json:"input_per_1m,omitempty"`
+	OutputPer1M     float64 `json:"output_per_1m,omitempty"`
+	CacheReadPer1M  float64 `json:"cache_read_per_1m,omitempty"`
+	CacheWritePer1M float64 `json:"cache_write_per_1m,omitempty"`
+	// Equivalent 声明"按注册表某等价模型计费"（如官方直连的 claude-sonnet-4-5
+	// 按 registry 里同名 OpenRouter 条目计）。与上面四个单价互斥：配置了单价
+	// 就用单价，只有单价全为 0 时才看 equivalent。
+	Equivalent string `json:"equivalent,omitempty"`
 }
 
 // BudgetConfig 是用户对单本书钱包的政策声明。越线停机等同于用户在那一刻
@@ -297,6 +315,20 @@ func (c *Config) ValidateBase() error {
 	for _, ev := range c.Notify.Events {
 		if !notify.IsKnownKind(ev) {
 			return fmt.Errorf("unknown notify event %q (valid: %s): %w", ev, strings.Join(notify.Kinds(), "/"), errs.ErrConfig)
+		}
+	}
+
+	// 校验定价覆盖（P7-3）：键非空、单价非负、有内容可覆盖。
+	for key, p := range c.Pricing {
+		if strings.TrimSpace(key) == "" {
+			return fmt.Errorf("pricing key cannot be empty: %w", errs.ErrConfig)
+		}
+		if p.InputPer1M < 0 || p.OutputPer1M < 0 || p.CacheReadPer1M < 0 || p.CacheWritePer1M < 0 {
+			return fmt.Errorf("pricing %q values must be >= 0: %w", key, errs.ErrConfig)
+		}
+		if p.InputPer1M == 0 && p.OutputPer1M == 0 && p.CacheReadPer1M == 0 &&
+			p.CacheWritePer1M == 0 && strings.TrimSpace(p.Equivalent) == "" {
+			return fmt.Errorf("pricing %q declares nothing (need per-1M prices or equivalent): %w", key, errs.ErrConfig)
 		}
 	}
 

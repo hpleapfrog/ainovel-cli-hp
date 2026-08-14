@@ -44,7 +44,11 @@ const retryHint = "上面的输出不是合法的 JSON 或缺少必填字段。�
 
 // decide 是所有场景共用的 LLM 调用内核:system 提示词 + 用户负载 → 解析进 T →
 // Validate;非法输出带反馈重问。除模型调用外无任何 IO。
-func decide[T any](ctx context.Context, model agentcore.ChatModel, systemPrompt, payload string, validate func(*T) error) (T, error) {
+//
+// schemaHint 是重试反馈附带的目标字段清单(非空时给出最小合法样例会更好):
+// 解析/校验失败时模型只有"错了"没有"对的样子",弱模型二次尝试大概率再错,
+// 3 次机会被低效消耗;带上目标形状可显著提高二次成功率(对低成本模型尤其明显)。
+func decide[T any](ctx context.Context, model agentcore.ChatModel, systemPrompt, payload string, validate func(*T) error, schemaHint string) (T, error) {
 	var zero T
 	if model == nil {
 		return zero, fmt.Errorf("arbiter: model 未配置")
@@ -91,9 +95,14 @@ func decide[T any](ctx context.Context, model agentcore.ChatModel, systemPrompt,
 				lastErr = fmt.Errorf("输出中未找到 JSON")
 			}
 			// 反馈式重试:把非法输出与纠正提示并入对话(仅格式/校验失败有反馈可给)。
+			// 反馈带目标 schema 字段清单 + 最小合法样例,弱模型第二次也能照着形状输出。
+			feedback := retryHint
+			if schemaHint != "" {
+				feedback += "\n目标 schema：" + schemaHint
+			}
 			messages = append(messages,
 				agentcore.Message{Role: agentcore.RoleAssistant, Content: []agentcore.ContentBlock{agentcore.TextBlock(raw)}},
-				agentcore.Message{Role: agentcore.RoleUser, Content: []agentcore.ContentBlock{agentcore.TextBlock(retryHint + "\n错误：" + lastErr.Error())}},
+				agentcore.Message{Role: agentcore.RoleUser, Content: []agentcore.ContentBlock{agentcore.TextBlock(feedback + "\n错误：" + lastErr.Error())}},
 			)
 		}
 		slog.Warn("裁定尝试失败", "module", "arbiter", "attempt", attempt, "err", lastErr)

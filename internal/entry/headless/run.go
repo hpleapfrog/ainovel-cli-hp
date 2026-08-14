@@ -54,6 +54,18 @@ func Run(cfg bootstrap.Config, bundle assets.Bundle, opts Options) error {
 
 	prompt := strings.TrimSpace(opts.Prompt)
 	if prompt != "" {
+		// 已有书的带 prompt 启动:按断点恢复,忽略 prompt。
+		// StartPrepared 会把进度清零(Checkpoints.Reset + Progress.Init(_,0))——
+		// 非分层完结闸门依赖 TotalChapters,清零后大纲仍在盘上、SetTotalChapters
+		// 副作用不会重跑,书籍会越过大纲无限续写(实测定格:12 章大纲写了 29 章)。
+		label, rerr := eng.Resume()
+		if rerr != nil {
+			return rerr
+		}
+		if label != "" {
+			fmt.Fprintf(stderr, "headless 恢复: %s (%s) — 检测到已有书籍,本次 --prompt 忽略\n", eng.Dir(), label)
+			return consume(eng, stdout, stderr, false)
+		}
 		plan, err := startup.PrepareQuick(startup.Request{
 			Mode:        startup.ModeQuick,
 			UserPrompt:  prompt,
