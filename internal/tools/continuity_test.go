@@ -71,6 +71,20 @@ func TestDetectStateRegressionDeadRevival(t *testing.T) {
 	}
 }
 
+// W1 势力兴衰与角色死亡同管道：已灭势力"复出"必须报 error。
+func TestDetectStateRegressionFactionDeadRevival(t *testing.T) {
+	history := []domain.StateChange{
+		{Entity: "青云宗", Field: "status", NewValue: "被灭门", Chapter: 50},
+	}
+	incoming := []domain.StateChange{
+		{Entity: "青云宗", Field: "status", NewValue: "重新崛起", Chapter: 80},
+	}
+	got := detectStateRegression(history, incoming)
+	if len(got) != 1 || got[0].Severity != domain.SeverityError {
+		t.Fatalf("destroyed faction revival must be an error regression, got %+v", got)
+	}
+}
+
 func TestDetectRelationshipJumpLevels(t *testing.T) {
 	history := []domain.RelationshipEntry{
 		{CharacterA: "林砚", CharacterB: "赵鸿", Relation: "仇人", Chapter: 18},
@@ -350,10 +364,10 @@ func TestDetectFactConflicts(t *testing.T) {
 
 	t.Run("白名单字段/无数字/无历史/值一致均不报", func(t *testing.T) {
 		got := detectFactConflicts(history, []domain.StateChange{
-			{Entity: "林砚", Field: "realm", NewValue: "练气", Chapter: 30},       // 回退白名单字段归 detectStateRegression
+			{Entity: "林砚", Field: "realm", NewValue: "练气", Chapter: 30},  // 回退白名单字段归 detectStateRegression
 			{Entity: "星辰科技", Field: "人数", NewValue: "四十一人", Chapter: 30}, // 无数字，无法机械比对
-			{Entity: "新公司", Field: "人数", NewValue: "10人", Chapter: 30},       // 无历史记录
-			{Entity: "星辰科技", Field: "人数", NewValue: "41人", Chapter: 30},     // 与历史一致
+			{Entity: "新公司", Field: "人数", NewValue: "10人", Chapter: 30},   // 无历史记录
+			{Entity: "星辰科技", Field: "人数", NewValue: "41人", Chapter: 30},  // 与历史一致
 		})
 		if len(got) != 0 {
 			t.Fatalf("这些场景都不应记, got %+v", got)
@@ -391,5 +405,103 @@ func TestCommitDetectsFactConflict(t *testing.T) {
 	persisted := st.World.LoadContinuityIssues(3)
 	if persisted == nil || len(persisted.FactConflicts) != 1 {
 		t.Fatalf("issues should persist for editor, got %+v", persisted)
+	}
+}
+
+// ── 世界观硬约束检测（W2）──
+
+func TestDetectHardConstraintViolations(t *testing.T) {
+	rules := []domain.WorldRule{
+		{Rule: "魔法必须吟唱", Boundary: "禁止瞬发",
+			HardConstraint: &domain.HardConstraint{Kind: "prohibition", Field: "power", Value: "瞬发魔法"}},
+		{Rule: "死者不可复生",
+			HardConstraint: &domain.HardConstraint{Kind: "prohibition", Field: "status", Value: "复活", Entity: "任何人"}},
+		{Rule: "纯软设定", Boundary: "无硬约束"},
+	}
+
+	t.Run("受控字段取到禁止值→error", func(t *testing.T) {
+		got := detectHardConstraintViolations(rules, []domain.StateChange{
+			{Entity: "林砚", Field: "power", NewValue: "瞬发魔法", Chapter: 3},
+		}, "")
+		if len(got) != 1 || got[0].Severity != domain.SeverityError ||
+			got[0].Entity != "林砚" || got[0].Rule != "魔法必须吟唱" || got[0].Source != "state_change" {
+			t.Fatalf("want one prohibition hit, got %+v", got)
+		}
+	})
+
+	t.Run("实体限定只命中限定实体", func(t *testing.T) {
+		got := detectHardConstraintViolations(rules, []domain.StateChange{
+			{Entity: "林砚", Field: "status", NewValue: "复活", Chapter: 3},
+		}, "")
+		if len(got) != 0 {
+			t.Fatalf("entity mismatch must not hit, got %+v", got)
+		}
+		got = detectHardConstraintViolations(rules, []domain.StateChange{
+			{Entity: "任何人", Field: "status", NewValue: "复活", Chapter: 3},
+		}, "")
+		if len(got) != 1 {
+			t.Fatalf("entity match must hit, got %+v", got)
+		}
+	})
+
+	t.Run("字段/值不匹配不报", func(t *testing.T) {
+		got := detectHardConstraintViolations(rules, []domain.StateChange{
+			{Entity: "林砚", Field: "power", NewValue: "吟唱魔法", Chapter: 3},
+			{Entity: "林砚", Field: "location", NewValue: "瞬发魔法", Chapter: 3},
+			{Entity: "林砚", Field: "人数", NewValue: "300人", Chapter: 3},
+		}, "")
+		if len(got) != 0 {
+			t.Fatalf("no hit expected, got %+v", got)
+		}
+	})
+
+	t.Run("scan_text 正文出现禁止值→warning", func(t *testing.T) {
+		scanRules := []domain.WorldRule{
+			{Rule: "魔法必须吟唱", Boundary: "禁止瞬发",
+				HardConstraint: &domain.HardConstraint{Kind: "prohibition", Field: "power", Value: "瞬发魔法", ScanText: true}},
+		}
+		got := detectHardConstraintViolations(scanRules, nil, "林砚抬手，瞬发魔法轰向对手。")
+		if len(got) != 1 || got[0].Severity != domain.SeverityWarning ||
+			got[0].Source != "chapter_text" || got[0].Occurrences != 1 {
+			t.Fatalf("want one text hit, got %+v", got)
+		}
+		// 未开 scan_text 时不扫正文
+		got = detectHardConstraintViolations(rules, nil, "林砚瞬发魔法轰向对手。")
+		if len(got) != 0 {
+			t.Fatalf("no scan_text must not scan content, got %+v", got)
+		}
+	})
+}
+
+// commit 全路径：硬约束违规经 commit 检测并落盘供 editor 消费。
+func TestCommitDetectsHardConstraintViolation(t *testing.T) {
+	st := newCommittedBook(t)
+	if err := st.World.SaveWorldRules([]domain.WorldRule{{
+		Category: "magic", Rule: "魔法必须吟唱", Boundary: "禁止瞬发",
+		HardConstraint: &domain.HardConstraint{Kind: "prohibition", Field: "power", Value: "瞬发魔法"},
+	}}); err != nil {
+		t.Fatalf("seed world rules: %v", err)
+	}
+
+	issues := commitForContinuity(t, st, map[string]any{
+		"chapter":    3,
+		"summary":    "林砚瞬发魔法",
+		"characters": []string{"林砚"},
+		"key_events": []string{"瞬发"},
+		"state_changes": []map[string]any{
+			{"entity": "林砚", "field": "power", "new_value": "瞬发魔法"},
+		},
+	})
+	if issues == nil || len(issues.HardConstraintViolations) != 1 {
+		t.Fatalf("expected one hard constraint violation, got %+v", issues)
+	}
+	v := issues.HardConstraintViolations[0]
+	if v.Entity != "林砚" || v.Field != "power" || v.Value != "瞬发魔法" || v.Severity != domain.SeverityError {
+		t.Fatalf("violation fields wrong: %+v", v)
+	}
+
+	persisted := st.World.LoadContinuityIssues(3)
+	if persisted == nil || len(persisted.HardConstraintViolations) != 1 {
+		t.Fatalf("hard constraint violations should persist for editor, got %+v", persisted)
 	}
 }

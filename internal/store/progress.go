@@ -197,6 +197,7 @@ func (s *ProgressStore) MarkChapterComplete(chapter, wordCount int, hookType, do
 }
 
 // MarkComplete 标记全书创作完成，并清除重开返工标记（完结即不再处于返工态）。
+// 同时清掉进行中章节等中间态——完本后 UI 不应残留"第 N 章进行中"。
 func (s *ProgressStore) MarkComplete() error {
 	return s.io.WithWriteLock(func() error {
 		p, err := s.loadUnlocked()
@@ -211,6 +212,8 @@ func (s *ProgressStore) MarkComplete() error {
 		}
 		p.Phase = domain.PhaseComplete
 		p.ReopenedFromComplete = false
+		p.InProgressChapter = 0
+		p.CompletedScenes = nil
 		return s.saveUnlocked(p)
 	})
 }

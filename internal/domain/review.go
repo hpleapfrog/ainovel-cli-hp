@@ -1,20 +1,48 @@
 package domain
 
+// FactDistance 世界事实距主角的距离标注（Bishu observer 口径）：
+// 用于 writer 感知"这条线离主角多远"、diag 识别"水下世界是否被遗忘"，
+// 也是将来势力实体（W1 证据驱动）的数据底子。
+type FactDistance string
+
+const (
+	DistanceNear FactDistance = "near" // 主角身边：本场景可感
+	DistanceMid  FactDistance = "mid"  // 同城/同局：短期内可能接触
+	DistanceFar  FactDistance = "far"  // 远处暗线：只影响氛围与伏笔
+	DistanceFog  FactDistance = "fog"  // 迷雾：读者与主角都未看清的未知
+)
+
+// Valid 判断距离标注是否为受控枚举（空值合法=旧数据/未标注）。
+func (d FactDistance) Valid() bool {
+	return d == "" || d == DistanceNear || d == DistanceMid || d == DistanceFar || d == DistanceFog
+}
+
 // TimelineEvent 时间线事件。
 type TimelineEvent struct {
 	Chapter    int      `json:"chapter"`
 	Time       string   `json:"time"`
 	Event      string   `json:"event"`
 	Characters []string `json:"characters,omitempty"`
+	// Distance 可选：该事件距主角的距离标注（near/mid/far/fog）。
+	Distance string `json:"distance,omitempty"`
 }
 
 // ForeshadowEntry 伏笔条目。
 type ForeshadowEntry struct {
 	ID          string `json:"id"`
 	Description string `json:"description"`
-	PlantedAt   int    `json:"planted_at"`
-	Status      string `json:"status"` // planted / advanced / resolved
-	ResolvedAt  int    `json:"resolved_at,omitempty"`
+	// Kind 区分两类叙事债务（Bishu 口径）：hook=读者想知道答案（悬念钩子）；
+	// debt=角色欠角色（人物层面的义务/亏欠，需剧情偿还）。空值兼容旧台账。
+	Kind string `json:"kind,omitempty"` // hook / debt
+	// ExpectedPayoff 预期回收区间（如"3-5章内"）。foreshadow_due 与 editor 评审
+	// 据此对照"是否已逾期"，比只看休眠章数多一个承诺口径。
+	ExpectedPayoff string `json:"expected_payoff,omitempty"`
+	// From/To 仅 debt 有效：债务人（欠下亏欠的一方）与债权人（被欠的一方）。
+	From       string `json:"from,omitempty"`
+	To         string `json:"to,omitempty"`
+	PlantedAt  int    `json:"planted_at"`
+	Status     string `json:"status"` // planted / advanced / resolved
+	ResolvedAt int    `json:"resolved_at,omitempty"`
 	// LastTouchedAt 是最近一次被触及（埋设或推进）的章节号。
 	// 没有这个字段时，"距上次推进多久"对模型、召回与 diag 都不可计算
 	// （advance 只翻转 Status，推进史会丢）。
@@ -47,6 +75,13 @@ type ForeshadowUpdate struct {
 	ID          string `json:"id"`
 	Action      string `json:"action"` // plant / advance / resolve
 	Description string `json:"description,omitempty"`
+	// Kind 仅 plant 时有效：hook（读者想知道答案）/ debt（角色欠角色）。
+	Kind string `json:"kind,omitempty"`
+	// ExpectedPayoff 仅 plant 时有效：预期回收区间（如"3-5章内"）。
+	ExpectedPayoff string `json:"expected_payoff,omitempty"`
+	// From/To 仅 plant + kind=debt 时有效：债务人/债权人（谁欠谁）。
+	From string `json:"from,omitempty"`
+	To   string `json:"to,omitempty"`
 }
 
 // RelationshipEntry 人物关系条目。

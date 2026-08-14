@@ -590,3 +590,66 @@ func TestSaveFoundationCompleteBookRejectsWithPendingRewrites(t *testing.T) {
 		t.Fatalf("phase should not be Complete with PendingRewrites: %s", progress.Phase)
 	}
 }
+
+// W1 势力/地点档案：save_foundation type=factions/locations 落盘 + LastUpdated
+// 强制覆盖 + 重名拒绝。
+func TestSaveFoundation_FactionsAndLocations(t *testing.T) {
+	s := store.NewStore(t.TempDir())
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := s.Progress.Init("test", 0); err != nil {
+		t.Fatalf("InitProgress: %v", err)
+	}
+	if err := s.Progress.MarkChapterComplete(5, 3000, "", ""); err != nil {
+		t.Fatalf("MarkChapterComplete: %v", err)
+	}
+	tool := NewSaveFoundationTool(s)
+
+	factionsArgs, _ := json.Marshal(map[string]any{
+		"type": "factions",
+		"content": []map[string]any{{
+			"name": "青云宗", "goal": "掌控灵脉", "relation": "敌对",
+			"status": "鼎盛", "location": "青云山", "last_updated": 1,
+		}},
+	})
+	raw, err := tool.Execute(context.Background(), factionsArgs)
+	if err != nil {
+		t.Fatalf("Execute factions: %v", err)
+	}
+	var out map[string]any
+	_ = json.Unmarshal(raw, &out)
+	if out["count"] != float64(1) {
+		t.Fatalf("factions count = %v", out["count"])
+	}
+	factions, _ := s.World.LoadFactions()
+	if len(factions) != 1 || factions[0].LastUpdated != 5 {
+		t.Fatalf("LastUpdated 应强制覆盖为当前已完成章 5: %+v", factions)
+	}
+
+	locationsArgs, _ := json.Marshal(map[string]any{
+		"type": "locations",
+		"content": []map[string]any{{
+			"name": "青云山", "kind": "宗门驻地", "owner_faction": "青云宗",
+		}},
+	})
+	if _, err := tool.Execute(context.Background(), locationsArgs); err != nil {
+		t.Fatalf("Execute locations: %v", err)
+	}
+	locations, _ := s.World.LoadLocations()
+	if len(locations) != 1 {
+		t.Fatalf("locations = %+v", locations)
+	}
+
+	// 重名拒绝
+	dupArgs, _ := json.Marshal(map[string]any{
+		"type": "factions",
+		"content": []map[string]any{
+			{"name": "青云宗", "status": "衰败"},
+			{"name": "青云宗", "status": "崛起"},
+		},
+	})
+	if _, err := tool.Execute(context.Background(), dupArgs); err == nil {
+		t.Fatal("duplicate faction names must be rejected")
+	}
+}

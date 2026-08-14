@@ -43,3 +43,42 @@ func requireTags(env map[string]string, tags ...string) error {
 	}
 	return nil
 }
+
+// extractJSONObject 从模型输出中截取首个平衡的 JSON 对象（容忍围栏/前后缀文本）。
+// 与 arbiter.extractJSON 同款路径：主流程已统一到「结构化输出 + 机械校验」范式，
+// === TAG === 信封仅作降级。
+func extractJSONObject(raw string) string {
+	start := strings.IndexByte(raw, '{')
+	if start < 0 {
+		return ""
+	}
+	depth := 0
+	inStr := false
+	escape := false
+	for i := start; i < len(raw); i++ {
+		c := raw[i]
+		if inStr {
+			switch {
+			case escape:
+				escape = false
+			case c == '\\':
+				escape = true
+			case c == '"':
+				inStr = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inStr = true
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return raw[start : i+1]
+			}
+		}
+	}
+	return ""
+}

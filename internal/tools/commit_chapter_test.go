@@ -966,3 +966,111 @@ func TestNormalizeChapterFormat_Idempotent(t *testing.T) {
 		t.Fatalf("not idempotent:\nonce=%q\ntwice=%q", once, twice)
 	}
 }
+
+// 非分层完结闸门兜底：TotalChapters 被异常清零（带 prompt 重启把进度重置而大纲
+// 仍在盘上的已知事故）时，从大纲长度推导——否则完结永不触发、writer 越过大纲
+// 无限续写（实测 12 章大纲写了 29 章）。
+func TestCommitChapterNonLayeredCompletesWithDerivedTotal(t *testing.T) {
+	dir := t.TempDir()
+	s := store.NewStore(dir)
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	// 模拟事故现场：progress 被重置（TotalChapters=0），大纲仍在盘上
+	if err := s.Progress.Init("test", 0); err != nil {
+		t.Fatalf("InitProgress: %v", err)
+	}
+	if err := s.Outline.SaveOutline([]domain.OutlineEntry{
+		{Chapter: 1, Title: "首章", CoreEvent: "起", Hook: "续"},
+		{Chapter: 2, Title: "末章", CoreEvent: "终", Hook: ""},
+	}); err != nil {
+		t.Fatalf("SaveOutline: %v", err)
+	}
+	if err := s.Progress.UpdatePhase(domain.PhaseWriting); err != nil {
+		t.Fatalf("UpdatePhase: %v", err)
+	}
+
+	tool := NewCommitChapterTool(s)
+	commit := func(ch int) map[string]any {
+		if err := s.Drafts.SaveDraft(ch, fmt.Sprintf("第 %d 章正文内容，用于测试推导完结。", ch)); err != nil {
+			t.Fatalf("SaveDraft %d: %v", ch, err)
+		}
+		args, _ := json.Marshal(map[string]any{
+			"chapter": ch, "summary": "摘要", "characters": []string{"主角"}, "key_events": []string{"事件"},
+		})
+		raw, err := tool.Execute(context.Background(), args)
+		if err != nil {
+			t.Fatalf("Execute ch%d: %v", ch, err)
+		}
+		var out map[string]any
+		if err := json.Unmarshal(raw, &out); err != nil {
+			t.Fatalf("Unmarshal ch%d: %v", ch, err)
+		}
+		return out
+	}
+
+	if bc, _ := commit(1)["book_complete"].(bool); bc {
+		t.Fatal("写完第 1 章不应触发完结")
+	}
+	if bc, _ := commit(2)["book_complete"].(bool); !bc {
+		t.Fatal("TotalChapters=0 时写完最后一章也应靠大纲推导完结")
+	}
+	if p, _ := s.Progress.Load(); p.Phase != domain.PhaseComplete {
+		t.Fatalf("expected phase=complete, got %s", p.Phase)
+	}
+}
+
+// W1 按章增量更新势力档案：commit_chapter.faction_updates → 档案合并 + 历史轨迹。
+func TestCommitChapter_FactionUpdates(t *testing.T) {
+	dir := t.TempDir()
+	s := store.NewStore(dir)
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := s.Progress.Init("test", 0); err != nil {
+		t.Fatalf("InitProgress: %v", err)
+	}
+	if err := s.World.SaveFactions([]domain.Faction{{Name: "青云宗", Status: "鼎盛"}}); err != nil {
+		t.Fatalf("SaveFactions: %v", err)
+	}
+	if err := s.Progress.UpdatePhase(domain.PhaseWriting); err != nil {
+		t.Fatalf("UpdatePhase: %v", err)
+	}
+
+	tool := NewCommitChapterTool(s)
+	if err := s.Drafts.SaveDraft(1, "第 1 章正文内容，青云宗被灭。"); err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
+	args, _ := json.Marshal(map[string]any{
+		"chapter": 1, "summary": "摘要", "characters": []string{"主角"}, "key_events": []string{"事件"},
+		"faction_updates": []map[string]any{
+			{"name": "青云宗", "status": "被灭", "distance": "far"},
+			{"name": "黑鸦会", "status": "崛起", "goal": "夺权"},
+		},
+	})
+	if _, err := tool.Execute(context.Background(), args); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	factions, _ := s.World.LoadFactions()
+	byName := map[string]domain.Faction{}
+	for _, f := range factions {
+		byName[f.Name] = f
+	}
+	if byName["青云宗"].Status != "被灭" || byName["黑鸦会"].Goal != "夺权" {
+		t.Fatalf("faction upsert via commit wrong: %+v", factions)
+	}
+
+	// 超 5 条拒绝
+	over := make([]map[string]any, 6)
+	for i := range over {
+		over[i] = map[string]any{"name": "势力" + string(rune('A'+i)), "status": "崛起"}
+	}
+	args2, _ := json.Marshal(map[string]any{
+		"chapter": 1, "summary": "摘要", "characters": []string{"主角"}, "key_events": []string{"事件"},
+		"faction_updates": over,
+	})
+	if _, err := tool.Execute(context.Background(), args2); err == nil {
+		t.Fatal(">5 faction_updates must be rejected")
+	}
+}

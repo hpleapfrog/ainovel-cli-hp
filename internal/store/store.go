@@ -3,6 +3,8 @@ package store
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"slices"
 	"sync"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
@@ -58,6 +60,57 @@ func NewStore(dir string) *Store {
 
 // Dir 返回输出根目录。
 func (s *Store) Dir() string { return s.dir }
+
+// WipeBook 清空本书全部创作产物（StartPrepared 开新书时调用）。
+//
+// 契约：StartPrepared 是"开一本新书"——只重置 progress 会让新书继承旧书的
+// 时间线/伏笔/关系/状态台账/配角名册/章节文件/用量账本：世界状态台账混入
+// 新书会污染一致性检测与上下文召回（与"越写越多"事故同源），旧用量账本会让
+// 新书预算从旧书成本起跳。
+//
+// 保留：meta/run.json（随即被 RunMeta 重写）、meta/user_rules.json
+// （PrepareUserRules 在每次启动时重写）、logs/。
+func (s *Store) WipeBook() error {
+	files := []string{
+		"premise.md", "outline.json", "outline.md",
+		"layered_outline.json", "layered_outline.md",
+		"characters.json", "characters.md",
+		"world_rules.json", "world_rules.md",
+		"factions.json", "factions.md",
+		"locations.json", "locations.md",
+		"timeline.json", "timeline.md",
+		"foreshadow_ledger.json", "foreshadow_ledger.md",
+		"relationship_state.json", "relationship_state.md",
+		"meta/progress.json", "meta/checkpoints.jsonl",
+		"meta/compass.json", "meta/style_rules.json",
+		"meta/state_changes.json", "meta/cast_ledger.json",
+		"meta/rule_violations.jsonl", "meta/continuity_issues.jsonl",
+		"meta/consistency_checks.jsonl", "meta/outline_feedback.jsonl",
+		"meta/decisions.jsonl", "meta/usage.json",
+		"meta/pending_commit.json",
+	}
+	dirs := []string{
+		"chapters", "drafts", "reviews", "summaries",
+		"meta/runtime", "meta/sessions", "meta/snapshots", "meta/archive",
+	}
+	var firstErr error
+	fail := func(err error) {
+		if firstErr == nil && err != nil {
+			firstErr = err
+		}
+	}
+	for _, f := range files {
+		if err := os.Remove(filepath.Join(s.dir, f)); err != nil && !os.IsNotExist(err) {
+			fail(err)
+		}
+	}
+	for _, d := range dirs {
+		if err := os.RemoveAll(filepath.Join(s.dir, d)); err != nil {
+			fail(err)
+		}
+	}
+	return firstErr
+}
 
 // CheckConsistency 对事实层做一次浅层校验，用于启动/恢复时生成 warning。
 // 纯只读：不修正数据，仅返回可读的问题描述。调用方决定如何展示（log / UI）。
@@ -134,6 +187,11 @@ func (s *Store) Init() error {
 // ── 跨域协调方法 ──
 
 // ExpandArc 将骨架弧展开为详细章节（Outline + Progress 联动）。
+//
+// 幂等守卫：目标弧已展开时，仅当传入章节与已落盘内容逐字段一致才放行
+// （崩溃/网络重试的同参重放）；内容不同的二次展开一律拒绝——已展开弧被整体
+// 覆盖会让已写章节失去大纲锚点、弧边界检测错位。想改动已展开弧的结构请走
+// 返工/追加卷，而不是重新展开。
 func (s *Store) ExpandArc(volumeIdx, arcIdx int, chapters []domain.OutlineEntry) error {
 	s.crossMu.Lock()
 	defer s.crossMu.Unlock()
@@ -141,7 +199,25 @@ func (s *Store) ExpandArc(volumeIdx, arcIdx int, chapters []domain.OutlineEntry)
 	s.Outline.io.mu.Lock()
 	defer s.Outline.io.mu.Unlock()
 
-	volumes, err := s.Outline.expandArcUnlocked(volumeIdx, arcIdx, chapters)
+	var volumes []domain.VolumeOutline
+	if err := s.Outline.io.ReadJSONUnlocked("layered_outline.json", &volumes); err != nil {
+		return err
+	}
+	for _, v := range volumes {
+		if v.Index != volumeIdx {
+			continue
+		}
+		for _, a := range v.Arcs {
+			if a.Index != arcIdx {
+				continue
+			}
+			if a.IsExpanded() && !sameOutlineChapters(a.Chapters, chapters) {
+				return fmt.Errorf("第 %d 卷第 %d 弧已展开且内容不同，禁止覆盖；如需调整结构请改用 append_volume 或经返工流程", volumeIdx, arcIdx)
+			}
+		}
+	}
+
+	updated, err := s.Outline.expandArcUnlocked(volumeIdx, arcIdx, chapters)
 	if err != nil {
 		return err
 	}
@@ -156,8 +232,24 @@ func (s *Store) ExpandArc(volumeIdx, arcIdx int, chapters []domain.OutlineEntry)
 	if p == nil {
 		p = &domain.Progress{}
 	}
-	p.TotalChapters = domain.TotalChapters(volumes)
+	p.TotalChapters = domain.TotalChapters(updated)
 	return s.Progress.saveUnlocked(p)
+}
+
+// sameOutlineChapters 逐字段比较两组大纲章节（忽略全局章号，落盘形态无章号）。
+func sameOutlineChapters(a, b []domain.OutlineEntry) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		x, y := a[i], b[i]
+		x.Chapter, y.Chapter = 0, 0
+		if x.Title != y.Title || x.CoreEvent != y.CoreEvent || x.Hook != y.Hook ||
+			!slices.Equal(x.Scenes, y.Scenes) {
+			return false
+		}
+	}
+	return true
 }
 
 // AppendVolume 追加新卷到分层大纲末尾（Outline + Progress 联动）。

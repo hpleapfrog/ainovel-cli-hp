@@ -106,6 +106,204 @@ func TestCheckArcBoundaryNextArcInSameVolume(t *testing.T) {
 	}
 }
 
+// ── CheckArcBoundary 规格测试 ──
+//
+// ArcBoundary 是分层书工作流的「事实入口」：IsArcEnd / IsVolumeEnd /
+// NeedsExpansion / NeedsNewVolume 直接驱动 Route 分支 6-10。Route 穷举测试钉的是
+// 「给定 State → 派谁」，State.ArcBoundary 的正确性依赖本函数——它若在弧边界
+// 错位、末章判断、跨卷切分上有边界 bug,会直接导致该评审不评审/该展开不展开/
+// 该完本不完本,且 Router 测试完全测不到(State 是喂进去的)。这里单独钉死。
+
+// 构造卷:每章一个 OutlineEntry,卷内弧数可变。
+func vol(idx int, arcs ...domain.ArcOutline) domain.VolumeOutline {
+	return domain.VolumeOutline{Index: idx, Title: "卷", Theme: "主题", Arcs: arcs}
+}
+
+func arc(idx, chapters int) domain.ArcOutline {
+	out := domain.ArcOutline{Index: idx, Title: "弧", Goal: "目标"}
+	if chapters > 0 {
+		for i := 1; i <= chapters; i++ {
+			out.Chapters = append(out.Chapters, domain.OutlineEntry{Title: "章", CoreEvent: "事件", Hook: "钩子"})
+		}
+	} else {
+		out.EstimatedChapters = 8
+	}
+	return out
+}
+
+func TestCheckArcBoundary_Spec(t *testing.T) {
+	tests := []struct {
+		name    string
+		volumes []domain.VolumeOutline
+		chapter int
+		want    *ArcBoundary // nil = 期待返回 nil(nil)
+		wantErr bool
+	}{
+		{
+			name:    "空大纲→无边界",
+			volumes: []domain.VolumeOutline{},
+			chapter: 1,
+			want:    nil,
+		},
+		{
+			name: "弧中章→非弧末,无 Next 信息",
+			volumes: []domain.VolumeOutline{
+				vol(1, arc(1, 3), arc(2, 0)),
+			},
+			chapter: 2, // 弧1第2/3章
+			want:    &ArcBoundary{Volume: 1, Arc: 1},
+		},
+		{
+			name: "首弧末→指向下一骨架弧并需展开",
+			volumes: []domain.VolumeOutline{
+				vol(1, arc(1, 3), arc(2, 0)),
+			},
+			chapter: 3,
+			want: &ArcBoundary{
+				IsArcEnd: true, Volume: 1, Arc: 1,
+				NextVolume: 1, NextArc: 2, NeedsExpansion: true,
+			},
+		},
+		{
+			name: "末弧末且卷非末→跨卷指向下一卷首弧",
+			volumes: []domain.VolumeOutline{
+				vol(1, arc(1, 2)),
+				vol(2, arc(1, 0)),
+			},
+			chapter: 2, // 卷1末弧最后一章
+			want: &ArcBoundary{
+				IsArcEnd: true, IsVolumeEnd: true, Volume: 1, Arc: 1,
+				NextVolume: 2, NextArc: 1, NeedsExpansion: true,
+			},
+		},
+		{
+			name: "卷末且无下一卷→NeedsNewVolume",
+			volumes: []domain.VolumeOutline{
+				vol(1, arc(1, 2)),
+			},
+			chapter: 2,
+			want: &ArcBoundary{
+				IsArcEnd: true, IsVolumeEnd: true, Volume: 1, Arc: 1,
+				NeedsNewVolume: true,
+			},
+		},
+		{
+			name: "卷2首章→定位正确且非弧末",
+			volumes: []domain.VolumeOutline{
+				vol(1, arc(1, 2)),
+				vol(2, arc(1, 3)),
+			},
+			chapter: 3,
+			want:    &ArcBoundary{Volume: 2, Arc: 1},
+		},
+		{
+			name: "下一弧已展开→NeedsExpansion=false",
+			volumes: []domain.VolumeOutline{
+				vol(1, arc(1, 1), arc(2, 2)),
+			},
+			chapter: 1,
+			want: &ArcBoundary{
+				IsArcEnd: true, Volume: 1, Arc: 1,
+				NextVolume: 1, NextArc: 2,
+			},
+		},
+		{
+			name: "单章成弧且卷中多弧→弧末即卷末判断正确",
+			volumes: []domain.VolumeOutline{
+				vol(1, arc(1, 1), arc(2, 1)),
+			},
+			chapter: 2, // 卷末弧的唯一一章
+			want: &ArcBoundary{
+				IsArcEnd: true, IsVolumeEnd: true, Volume: 1, Arc: 2,
+				NeedsNewVolume: true,
+			},
+		},
+		{
+			name: "章节超出大纲范围→nil",
+			volumes: []domain.VolumeOutline{
+				vol(1, arc(1, 2)),
+			},
+			chapter: 3,
+			want:    nil,
+		},
+		{
+			name: "章节为0→nil",
+			volumes: []domain.VolumeOutline{
+				vol(1, arc(1, 2)),
+			},
+			chapter: 0,
+			want:    nil,
+		},
+		{
+			name: "骨架弧中的骨架弧不参与章节定位→定位仅展开弧",
+			volumes: []domain.VolumeOutline{
+				vol(1, arc(1, 0), arc(2, 2)), // 首弧是骨架,章节从弧2开始
+			},
+			chapter: 1, // 全局第1章 = 弧2第1/2章
+			want:    &ArcBoundary{Volume: 1, Arc: 2},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := setupLayered(t, tt.volumes)
+			got, err := s.Outline.CheckArcBoundary(tt.chapter)
+			if err != nil {
+				if tt.wantErr {
+					return
+				}
+				t.Fatalf("CheckArcBoundary: %v", err)
+			}
+			if tt.want == nil {
+				if got != nil {
+					t.Fatalf("expected nil, got %+v", got)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatalf("expected %+v, got nil", tt.want)
+			}
+			if *got != *tt.want {
+				t.Fatalf("boundary mismatch:\n got %+v\nwant %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+// ExpandArc 幂等守卫:同参重试放行,内容不同的二次展开拒绝(已写章节锚点保护)。
+func TestExpandArcGuard_RejectsOverwrite(t *testing.T) {
+	ch := func(title string) domain.OutlineEntry {
+		return domain.OutlineEntry{Title: title, CoreEvent: "事件", Hook: "钩子"}
+	}
+	s := setupLayered(t, []domain.VolumeOutline{{
+		Index: 1, Title: "第一卷", Theme: "主题",
+		Arcs: []domain.ArcOutline{
+			{Index: 1, Title: "首弧", Goal: "目标", Chapters: []domain.OutlineEntry{ch("章一"), ch("章二")}},
+			{Index: 2, Title: "骨架弧", Goal: "目标", EstimatedChapters: 8},
+		},
+	}})
+
+	// 首次展开骨架弧:成功
+	if err := s.ExpandArc(1, 2, []domain.OutlineEntry{ch("新章一"), ch("新章二")}); err != nil {
+		t.Fatalf("first expand: %v", err)
+	}
+
+	// 同参重放(崩溃/网络重试):幂等放行
+	if err := s.ExpandArc(1, 2, []domain.OutlineEntry{ch("新章一"), ch("新章二")}); err != nil {
+		t.Fatalf("identical replay should pass: %v", err)
+	}
+
+	// 内容不同的二次展开:拒绝
+	if err := s.ExpandArc(1, 2, []domain.OutlineEntry{ch("不同内容")}); err == nil {
+		t.Fatal("different-content re-expand must be rejected")
+	}
+
+	// 已展开弧(弧1)被误传:同样拒绝
+	if err := s.ExpandArc(1, 1, []domain.OutlineEntry{ch("覆盖")}); err == nil {
+		t.Fatal("re-expanding an already expanded arc must be rejected")
+	}
+}
+
 func TestAppendVolumeValidation(t *testing.T) {
 	s := setupLayered(t, []domain.VolumeOutline{{
 		Index: 1, Title: "第一卷", Theme: "起步",

@@ -34,6 +34,10 @@ type commitOutput struct {
 	ContinuityIssues *domain.ContinuityIssues `json:"continuity_issues,omitempty"`
 }
 
+// factionUpdatesMax 单章势力增量申报上限——writer 是事实申报者不是设定创作者，
+// 成规模的档案改写属于 architect 的 save_foundation 全量落盘职责。
+const factionUpdatesMax = 5
+
 func (t *CommitChapterTool) Name() string { return "commit_chapter" }
 func (t *CommitChapterTool) Description() string {
 	return "提交章节终稿。加载草稿正文保存为终稿，更新时间线、伏笔、关系、角色状态和进度。" +
@@ -50,11 +54,16 @@ func (t *CommitChapterTool) Schema() map[string]any {
 		schema.Property("time", schema.String("故事内时间")).Required(),
 		schema.Property("event", schema.String("事件描述")).Required(),
 		schema.Property("characters", schema.Array("涉及角色", schema.String(""))),
+		schema.Property("distance", schema.Enum("该事件距主角的距离：near=主角身边本场景可感；mid=同城短期内可能接触；far=远处暗线只影响氛围与伏笔；fog=迷雾未看清的未知。世界事件/暗线务必标注，主角亲历的可不标", "near", "mid", "far", "fog")),
 	)
 	foreshadowSchema := schema.Object(
 		schema.Property("id", schema.String("伏笔 ID")).Required(),
 		schema.Property("action", schema.Enum("操作", "plant", "advance", "resolve")).Required(),
 		schema.Property("description", schema.String("伏笔描述（仅 plant 时必需）")),
+		schema.Property("kind", schema.Enum("伏笔类型（仅 plant 时有效）：hook=读者想知道答案的悬念钩子；debt=角色欠角色的叙事债务（人物层面的亏欠，需剧情偿还）。缺省按悬念钩子处理", "hook", "debt")),
+		schema.Property("expected_payoff", schema.String("预期回收区间（仅 plant 时有效，如\"3-5章内\"）：给后续推进与评审一个承诺口径")),
+		schema.Property("from", schema.String("债务人（仅 plant + kind=debt 时有效）：欠下亏欠的一方")),
+		schema.Property("to", schema.String("债权人（仅 plant + kind=debt 时有效）：被欠的一方")),
 	)
 	relationshipSchema := schema.Object(
 		schema.Property("character_a", schema.String("角色 A")).Required(),
@@ -63,16 +72,31 @@ func (t *CommitChapterTool) Schema() map[string]any {
 	)
 	stateChangeSchema := schema.Object(
 		schema.Property("entity", schema.String("角色名或实体名")).Required(),
-		schema.Property("field", schema.String("变化属性")).Required(),
+		schema.Property("field", schema.String("变化属性：角色状态用受控枚举 realm/location/status/power/rank/relation/other；数值类世界事实用自定义事实名（如\"人数\"）")).Required(),
 		schema.Property("old_value", schema.String("变化前的值")),
 		schema.Property("new_value", schema.String("变化后的值")).Required(),
 		schema.Property("reason", schema.String("变化原因")),
+		schema.Property("distance", schema.Enum("该事实距主角的距离：near/mid/far/fog（同时间线事件口径）。势力动态、暗线等非主角亲历的事实务必标注", "near", "mid", "far", "fog")),
 	)
 	feedbackSchema := schema.Object(
 		schema.Property("deviation", schema.String("偏离大纲的描述")).Required(),
 		schema.Property("suggestion", schema.String("对后续大纲的调整建议")).Required(),
 	)
 	feedbackSchema["description"] = "对后续大纲的建议对象；必须直接传 JSON object，不要传字符串化 JSON"
+	factionUpdateSchema := schema.Object(
+		schema.Property("name", schema.String("势力名（正式名或其别名）")).Required(),
+		schema.Property("status", schema.String("兴衰状态（如 鼎盛/崛起/衰败/被灭）——新势力必填")),
+		schema.Property("goal", schema.String("势力诉求（变化时提供）")),
+		schema.Property("relation", schema.String("与主线关系（变化时提供）")),
+		schema.Property("location", schema.String("驻地（变化时提供）")),
+		schema.Property("distance", schema.Enum("距主角距离（派生到状态历史轨迹用）", "near", "mid", "far", "fog")),
+	)
+	locationUpdateSchema := schema.Object(
+		schema.Property("name", schema.String("地点名（正式名或其别名）")).Required(),
+		schema.Property("kind", schema.String("地点类型（城/域/秘境/宗门驻地/国/其他）——新地点必填")),
+		schema.Property("description", schema.String("场景级可感信息（变化时提供）")),
+		schema.Property("owner_faction", schema.String("所属势力（易主时提供）")),
+	)
 	return schema.Object(
 		schema.Property("chapter", schema.Int("章节号")).Required(),
 		schema.Property("summary", schema.String("本章内容摘要（200字以内）")).Required(),
@@ -89,6 +113,8 @@ func (t *CommitChapterTool) Schema() map[string]any {
 		schema.Property("hook_type", schema.Enum("章末钩子类型", "crisis", "mystery", "desire", "emotion", "choice")),
 		schema.Property("dominant_strand", schema.Enum("本章主导叙事线", "quest", "fire", "constellation")),
 		schema.Property("feedback", feedbackSchema),
+		schema.Property("faction_updates", schema.Array("势力档案增量（可选，最多 5 条）：本章涉及宗门/家族/国家的兴衰变化或新势力涌现时申报——工具层确定性合并档案（只更新提供的字段）并自动留状态历史轨迹；已在 state_changes 里报过同一势力的 status 变化就不要重复报", factionUpdateSchema)),
+		schema.Property("location_updates", schema.Array("地点档案增量（可选，最多 5 条）：本章涌现新地点/易主/面貌变化时申报——工具层确定性合并档案", locationUpdateSchema)),
 	)
 }
 
@@ -106,12 +132,33 @@ func (t *CommitChapterTool) Execute(_ context.Context, args json.RawMessage) (js
 		HookType            string                     `json:"hook_type"`
 		DominantStrand      string                     `json:"dominant_strand"`
 		Feedback            *domain.OutlineFeedback    `json:"feedback"`
+		FactionUpdates      []domain.FactionUpdate     `json:"faction_updates"`
+		LocationUpdates     []domain.LocationUpdate    `json:"location_updates"`
 	}
 	if err := json.Unmarshal(args, &a); err != nil {
 		return nil, fmt.Errorf("invalid args: %w: %w", errs.ErrToolArgs, err)
 	}
 	if a.Chapter <= 0 {
 		return nil, fmt.Errorf("chapter must be > 0: %w", errs.ErrToolArgs)
+	}
+	if len(a.FactionUpdates) > factionUpdatesMax {
+		return nil, fmt.Errorf("faction_updates 最多 %d 条，收到 %d: %w", factionUpdatesMax, len(a.FactionUpdates), errs.ErrToolArgs)
+	}
+	for i, fu := range a.FactionUpdates {
+		if strings.TrimSpace(fu.Name) == "" {
+			return nil, fmt.Errorf("faction_updates[%d].name 不能为空: %w", i, errs.ErrToolArgs)
+		}
+		if !domain.FactDistance(fu.Distance).Valid() {
+			return nil, fmt.Errorf("faction_updates[%d].distance %q 非法：可选 near/mid/far/fog: %w", i, fu.Distance, errs.ErrToolArgs)
+		}
+	}
+	if len(a.LocationUpdates) > factionUpdatesMax {
+		return nil, fmt.Errorf("location_updates 最多 %d 条，收到 %d: %w", factionUpdatesMax, len(a.LocationUpdates), errs.ErrToolArgs)
+	}
+	for i, lu := range a.LocationUpdates {
+		if strings.TrimSpace(lu.Name) == "" {
+			return nil, fmt.Errorf("location_updates[%d].name 不能为空: %w", i, errs.ErrToolArgs)
+		}
 	}
 	if t.store.Progress.IsChapterCompleted(a.Chapter) {
 		// 清理可能残留的 PendingCommit（崩溃发生在 ProgressMarked 之后、ClearPendingCommit 之前）
@@ -238,9 +285,22 @@ func (t *CommitChapterTool) Execute(_ context.Context, args json.RawMessage) (js
 			return nil, fmt.Errorf("append state changes: %w: %w", errs.ErrStoreWrite, err)
 		}
 	}
+	// 势力档案增量（W1）：writer 申报 → 工具层确定性 Upsert 合并 + 自动派生
+	// 状态历史轨迹。写失败即 commit 失败（幂等合并，重试安全）。
+	if len(a.FactionUpdates) > 0 {
+		if _, err := t.store.World.UpsertFactions(a.Chapter, a.FactionUpdates); err != nil {
+			return nil, fmt.Errorf("update factions: %w: %w", errs.ErrStoreWrite, err)
+		}
+	}
+	// 地点档案增量（W1 同款）。
+	if len(a.LocationUpdates) > 0 {
+		if _, err := t.store.World.UpsertLocations(a.Chapter, a.LocationUpdates); err != nil {
+			return nil, fmt.Errorf("update locations: %w: %w", errs.ErrStoreWrite, err)
+		}
+	}
 
-	// 5. 一致性检测：状态回退 + 数值事实冲突 + 关系跳跃 + 出场漏报（仅返事实，不阻断；
-	//    落盘后经 novel_context 供 editor 消费，见下方 SaveContinuityIssues）
+	// 5. 一致性检测：状态回退 + 数值事实冲突 + 关系跳跃 + 出场漏报 + 世界观硬约束
+	//    （仅返事实，不阻断；落盘后经 novel_context 供 editor 消费，见下方 SaveContinuityIssues）
 	var continuityIssues *domain.ContinuityIssues
 	{
 		issues := &domain.ContinuityIssues{}
@@ -250,6 +310,9 @@ func (t *CommitChapterTool) Execute(_ context.Context, args json.RawMessage) (js
 		}
 		if len(priorRelations) > 0 {
 			issues.RelationshipJumps = detectRelationshipJump(priorRelations, a.RelationshipChanges)
+		}
+		if worldRules, _ := t.store.World.LoadWorldRules(); len(worldRules) > 0 {
+			issues.HardConstraintViolations = detectHardConstraintViolations(worldRules, a.StateChanges, content)
 		}
 		chars, _ := t.store.Characters.Load()
 		cast, _ := t.store.Cast.Load()
@@ -552,7 +615,8 @@ func (t *CommitChapterTool) executeRewriteCommit(
 		case latest.Layered:
 			reComplete = layeredComplete(t.store, latest)
 		default:
-			reComplete = latest.TotalChapters > 0 && len(latest.CompletedChapters) >= latest.TotalChapters
+			total := effectiveNonLayeredTotal(t.store, latest)
+			reComplete = total > 0 && len(latest.CompletedChapters) >= total
 		}
 		if reComplete {
 			if cerr := t.store.Progress.MarkComplete(); cerr == nil {
@@ -644,7 +708,9 @@ func loadCoreCharacterNameSet(s *store.Store) map[string]bool {
 }
 
 // applyCompletion 判断本次 commit 是否使全书完结，若是则 MarkComplete 并返回 true。
-//   - 非分层：写完约定总章数即完结。
+//   - 非分层：写完约定总章数即完结。TotalChapters 被异常清零时(带 prompt 重启把
+//     进度重置而大纲仍在盘上的已知事故)从 outline 长度推导——大纲是完结闸门的
+//     事实依据，总章数字段只是它的镜像。
 //   - 分层：架构师显式 save_foundation type=complete_book 是主路径；这里再加一道
 //     确定性兜底（见 layeredComplete）——防止模型在终点既不 append_volume 也不
 //     complete_book，导致"写手裸跑越界章节 → 越界守卫拦截 → 反复重试"的 livelock
@@ -660,11 +726,32 @@ func (t *CommitChapterTool) applyCompletion(result *domain.CommitResult, progres
 		}
 		return false
 	}
-	if progress.TotalChapters > 0 && result.NextChapter > progress.TotalChapters {
+	total := progress.TotalChapters
+	if total <= 0 {
+		if o, err := t.store.Outline.LoadOutline(); err == nil {
+			total = len(o)
+		}
+	}
+	if total > 0 && result.NextChapter > total {
 		_ = t.store.Progress.MarkComplete()
 		return true
 	}
 	return false
+}
+
+// effectiveNonLayeredTotal 非分层完结判定的总章数：TotalChapters 优先，
+// 被异常清零时从大纲长度推导。与 applyCompletion/executeRewriteCommit 同口径。
+func effectiveNonLayeredTotal(st *store.Store, p *domain.Progress) int {
+	if p == nil {
+		return 0
+	}
+	if p.TotalChapters > 0 {
+		return p.TotalChapters
+	}
+	if o, err := st.Outline.LoadOutline(); err == nil {
+		return len(o)
+	}
+	return 0
 }
 
 // ── 分层完结判定（包级：commit_chapter 与 save_volume_summary 两个触发点共用）──

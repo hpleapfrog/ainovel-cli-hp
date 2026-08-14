@@ -53,17 +53,34 @@ type FactConflict struct {
 	Severity ContinuityIssueSeverity `json:"severity"`
 }
 
+// HardConstraintViolation 世界规则硬约束违规（W2）：commit 申报的 state_change
+// 命中了 WorldRule.HardConstraint 的禁则（受控字段取到禁止值），或正文扫描
+// （scan_text）发现了禁止值原文。
+// 硬设定（如"本世界魔法必须吟唱"的可枚举形态）从此有与状态回退同级的机械兜底。
+type HardConstraintViolation struct {
+	Rule        string                  `json:"rule"`                  // 命中硬约束的世界规则描述（Rule 文本）
+	Kind        string                  `json:"kind"`                  // 约束类型（当前仅 prohibition）
+	Entity      string                  `json:"entity"`                // 违规实体（正文扫描时为空）
+	Field       string                  `json:"field"`                 // 受控字段
+	Value       string                  `json:"value"`                 // 申报的禁止值
+	Source      string                  `json:"source,omitempty"`      // state_change | chapter_text
+	Occurrences int                     `json:"occurrences,omitempty"` // chapter_text 来源的出现次数
+	Severity    ContinuityIssueSeverity `json:"severity"`
+}
+
 // ContinuityIssues 一章 commit 时的机械连续性检测结果（仅事实，不阻断）。
 type ContinuityIssues struct {
-	StateRegressions     []StateRegression     `json:"state_regressions,omitempty"`
-	RelationshipJumps    []RelationshipJump    `json:"relationship_jumps,omitempty"`
-	UnreportedCharacters []UnreportedCharacter `json:"unreported_characters,omitempty"`
-	FactConflicts        []FactConflict        `json:"fact_conflicts,omitempty"`
+	StateRegressions         []StateRegression         `json:"state_regressions,omitempty"`
+	RelationshipJumps        []RelationshipJump        `json:"relationship_jumps,omitempty"`
+	UnreportedCharacters     []UnreportedCharacter     `json:"unreported_characters,omitempty"`
+	FactConflicts            []FactConflict            `json:"fact_conflicts,omitempty"`
+	HardConstraintViolations []HardConstraintViolation `json:"hard_constraint_violations,omitempty"`
 }
 
 // Empty 判定是否没有任何发现。
 func (c *ContinuityIssues) Empty() bool {
 	return c == nil ||
 		(len(c.StateRegressions) == 0 && len(c.RelationshipJumps) == 0 &&
-			len(c.UnreportedCharacters) == 0 && len(c.FactConflicts) == 0)
+			len(c.UnreportedCharacters) == 0 && len(c.FactConflicts) == 0 &&
+			len(c.HardConstraintViolations) == 0)
 }

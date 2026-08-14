@@ -16,7 +16,11 @@ import (
 
 // ── 1. 状态回退检测 ──
 
-var regressionFields = []string{"status", "realm", "power", "rank"}
+// regressionFields 是回退/死亡检测的白名单字段——与 domain.StateField 受控枚举
+// 对齐，杜绝字符串字面量漂移（W5）。
+var regressionFields = []string{
+	string(domain.FieldStatus), string(domain.FieldRealm), string(domain.FieldPower), string(domain.FieldRank),
+}
 
 func detectStateRegression(allChanges []domain.StateChange, incoming []domain.StateChange) []domain.StateRegression {
 	if len(incoming) == 0 || len(allChanges) == 0 {
@@ -72,7 +76,11 @@ func isDeadState(s string) bool {
 	s = strings.ToLower(s)
 	return strings.Contains(s, "死亡") || strings.Contains(s, "dead") ||
 		strings.Contains(s, "陨落") || strings.Contains(s, "牺牲") ||
-		strings.Contains(s, "毙命") || strings.Contains(s, "逝去")
+		strings.Contains(s, "毙命") || strings.Contains(s, "逝去") ||
+		// 势力灭亡形态（W1：Entity=势力名、Field=status 登记兴衰时同样受死亡复活检测保护）
+		strings.Contains(s, "被灭") || strings.Contains(s, "灭门") ||
+		strings.Contains(s, "覆灭") || strings.Contains(s, "亡国") ||
+		strings.Contains(s, "解散") || strings.Contains(s, "除名")
 }
 
 // ── 1b. 数值事实冲突检测 ──
@@ -118,6 +126,59 @@ func detectFactConflicts(prior, incoming []domain.StateChange) []domain.FactConf
 		})
 	}
 	return result
+}
+
+// ── 1c. 世界规则硬约束检测 ──
+
+// detectHardConstraintViolations 对照世界规则的硬约束(W2)机械校验本章申报的
+// 状态变化 + 正文扫描(scan_text):受控字段取到禁止值即违规(prohibition 禁则)。
+// 规则若无 HardConstraint 或约束非法(落盘时已校验,这里防御性跳过)不参与匹配。
+func detectHardConstraintViolations(rules []domain.WorldRule, incoming []domain.StateChange, content string) []domain.HardConstraintViolation {
+	if len(rules) == 0 || (len(incoming) == 0 && content == "") {
+		return nil
+	}
+	var out []domain.HardConstraintViolation
+	for _, r := range rules {
+		hc := r.HardConstraint
+		if hc == nil || hc.Kind != "prohibition" || hc.Value == "" {
+			continue
+		}
+		for _, sc := range incoming {
+			if domain.NormalizeStateField(sc.Field) != domain.NormalizeStateField(hc.Field) {
+				continue
+			}
+			if hc.Entity != "" && sc.Entity != hc.Entity {
+				continue
+			}
+			if sc.NewValue != hc.Value {
+				continue
+			}
+			out = append(out, domain.HardConstraintViolation{
+				Rule:     r.Rule,
+				Kind:     hc.Kind,
+				Entity:   sc.Entity,
+				Field:    sc.Field,
+				Value:    sc.NewValue,
+				Source:   "state_change",
+				Severity: domain.SeverityError,
+			})
+		}
+		// 正文扫描:禁止值原文出现在章节正文即记 warning(子串误报由 editor 裁定)。
+		if hc.ScanText && content != "" {
+			if n := strings.Count(content, hc.Value); n > 0 {
+				out = append(out, domain.HardConstraintViolation{
+					Rule:        r.Rule,
+					Kind:        hc.Kind,
+					Field:       hc.Field,
+					Value:       hc.Value,
+					Source:      "chapter_text",
+					Occurrences: n,
+					Severity:    domain.SeverityWarning,
+				})
+			}
+		}
+	}
+	return out
 }
 
 // ── 2. 关系跳跃检测 ──

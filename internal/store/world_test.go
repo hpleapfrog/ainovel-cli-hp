@@ -231,6 +231,160 @@ func TestRelationships_PairKeySymmetry(t *testing.T) {
 	}
 }
 
+// ── Factions / Locations（W1）──
+
+func TestFactions_SaveLoadRender(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.World.SaveFactions([]domain.Faction{{
+		Name: "青云宗", Aliases: []string{"青云门"}, Goal: "掌控北境灵脉",
+		Relation: "敌对", Status: "鼎盛", Location: "青云山", LastUpdated: 12,
+	}}); err != nil {
+		t.Fatalf("SaveFactions: %v", err)
+	}
+	factions, err := s.World.LoadFactions()
+	if err != nil || len(factions) != 1 {
+		t.Fatalf("LoadFactions: %v, err=%v", factions, err)
+	}
+	if factions[0].Name != "青云宗" || factions[0].Status != "鼎盛" || factions[0].LastUpdated != 12 {
+		t.Fatalf("faction fields wrong: %+v", factions[0])
+	}
+}
+
+func TestLocations_SaveLoad(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.World.SaveLocations([]domain.Location{{
+		Name: "青云山", Kind: "宗门驻地", Description: "常年雾锁，山门难寻", OwnerFaction: "青云宗",
+	}}); err != nil {
+		t.Fatalf("SaveLocations: %v", err)
+	}
+	locations, err := s.World.LoadLocations()
+	if err != nil || len(locations) != 1 {
+		t.Fatalf("LoadLocations: %v, err=%v", locations, err)
+	}
+	if locations[0].OwnerFaction != "青云宗" || locations[0].Kind != "宗门驻地" {
+		t.Fatalf("location fields wrong: %+v", locations[0])
+	}
+}
+
+// UpsertLocations：按章增量合并地点档案（W1 同款）。
+func TestUpsertLocations_MergeAndNew(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.World.SaveLocations([]domain.Location{{
+		Name: "青云山", Kind: "宗门驻地", Description: "常年雾锁", OwnerFaction: "青云宗",
+	}}); err != nil {
+		t.Fatalf("SaveLocations: %v", err)
+	}
+	n, err := s.World.UpsertLocations(20, []domain.LocationUpdate{
+		{Name: "青云山", OwnerFaction: "黑鸦会"},             // 易主
+		{Name: "雾隐谷", Kind: "秘境", Description: "雾气有毒"}, // 新地点
+		{Name: "无名地"}, // 新地点无 kind → 跳过
+	})
+	if err != nil || n != 2 {
+		t.Fatalf("UpsertLocations: n=%d err=%v", n, err)
+	}
+	locations, _ := s.World.LoadLocations()
+	if len(locations) != 2 {
+		t.Fatalf("locations = %+v", locations)
+	}
+	byName := map[string]domain.Location{}
+	for _, l := range locations {
+		byName[l.Name] = l
+	}
+	if byName["青云山"].OwnerFaction != "黑鸦会" || byName["青云山"].Kind != "宗门驻地" {
+		t.Fatalf("merge wrong: %+v", byName["青云山"])
+	}
+	if byName["雾隐谷"].Kind != "秘境" || byName["雾隐谷"].Description != "雾气有毒" {
+		t.Fatalf("new location wrong: %+v", byName["雾隐谷"])
+	}
+}
+
+// ArchiveLedgers：弧末台账快照归档（历史基线留在热文件）。
+func TestArchiveLedgers(t *testing.T) {
+	s := newTestStore(t)
+	_ = s.World.AppendStateChanges([]domain.StateChange{
+		{Chapter: 1, Entity: "青云宗", Field: "status", NewValue: "被灭"},
+	})
+	_ = s.World.AppendTimelineEvents([]domain.TimelineEvent{
+		{Chapter: 1, Time: "夜", Event: "灭门"},
+	})
+	if err := s.World.ArchiveLedgers(1, 2); err != nil {
+		t.Fatalf("ArchiveLedgers: %v", err)
+	}
+	for _, rel := range []string{
+		"meta/archive/v01a02/state_changes.json",
+		"meta/archive/v01a02/timeline.json",
+	} {
+		if _, err := os.Stat(filepath.Join(s.Dir(), rel)); err != nil {
+			t.Fatalf("%s should exist: %v", rel, err)
+		}
+	}
+}
+func TestUpsertFactions_MergeNewAndAlias(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.World.SaveFactions([]domain.Faction{{
+		Name: "青云宗", Aliases: []string{"青云门"}, Status: "鼎盛", LastUpdated: 10,
+	}}); err != nil {
+		t.Fatalf("SaveFactions: %v", err)
+	}
+
+	// 1. 状态变化（别名命中）+ 新增势力
+	n, err := s.World.UpsertFactions(20, []domain.FactionUpdate{
+		{Name: "青云门", Status: "被灭", Distance: "far"},                // 别名命中
+		{Name: "黑鸦会", Status: "崛起", Goal: "夺取灵脉", Distance: "near"}, // 新增
+	})
+	if err != nil || n != 2 {
+		t.Fatalf("UpsertFactions: n=%d err=%v", n, err)
+	}
+
+	factions, _ := s.World.LoadFactions()
+	if len(factions) != 2 {
+		t.Fatalf("factions = %+v", factions)
+	}
+	byName := map[string]domain.Faction{}
+	for _, f := range factions {
+		byName[f.Name] = f
+	}
+	if byName["青云宗"].Status != "被灭" || byName["青云宗"].LastUpdated != 20 {
+		t.Fatalf("alias merge wrong: %+v", byName["青云宗"])
+	}
+	if byName["黑鸦会"].Goal != "夺取灵脉" || byName["黑鸦会"].LastUpdated != 20 {
+		t.Fatalf("new faction wrong: %+v", byName["黑鸦会"])
+	}
+
+	// 派生历史轨迹：青云宗 鼎盛→被灭（OldValue 取自档案旧值）
+	changes, _ := s.World.LoadStateChanges()
+	if len(changes) != 2 {
+		t.Fatalf("derived state changes = %+v", changes)
+	}
+	byEntity := map[string]domain.StateChange{}
+	for _, c := range changes {
+		byEntity[c.Entity] = c
+	}
+	if byEntity["青云宗"].OldValue != "鼎盛" || byEntity["青云宗"].NewValue != "被灭" || byEntity["青云宗"].Distance != "far" {
+		t.Fatalf("derived regression trail wrong: %+v", byEntity["青云宗"])
+	}
+	if byEntity["黑鸦会"].OldValue != "" || byEntity["黑鸦会"].NewValue != "崛起" || byEntity["黑鸦会"].Distance != "near" {
+		t.Fatalf("derived new trail wrong: %+v", byEntity["黑鸦会"])
+	}
+
+	// 幂等：同章重复（崩溃恢复）同值重写无害，历史轨迹去重
+	n, err = s.World.UpsertFactions(20, []domain.FactionUpdate{
+		{Name: "青云门", Status: "被灭", Distance: "far"},
+	})
+	if err != nil || n != 1 {
+		t.Fatalf("idempotent Upsert: n=%d err=%v", n, err)
+	}
+	changes, _ = s.World.LoadStateChanges()
+	if len(changes) != 2 {
+		t.Fatalf("derived trail must be deduped: %+v", changes)
+	}
+
+	// 新势力无 status → 跳过
+	if n, err := s.World.UpsertFactions(21, []domain.FactionUpdate{{Name: "无名会"}}); err != nil || n != 0 {
+		t.Fatalf("statusless new faction should be skipped: n=%d err=%v", n, err)
+	}
+}
+
 // ── StateChanges ──
 
 func TestStateChanges_Append(t *testing.T) {
@@ -266,6 +420,26 @@ func TestStateChanges_AppendIsIdempotent(t *testing.T) {
 	loaded, _ := s.World.LoadStateChanges()
 	if len(loaded) != 1 {
 		t.Fatalf("duplicate state change should be ignored, got %d: %+v", len(loaded), loaded)
+	}
+}
+
+// distance 受控枚举：非主角亲历的暗线事实标注距主角远近（Bishu observer 口径），
+// 非法值拒绝（防自由字符串漂移）。
+func TestStateChanges_DistanceValidation(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.World.AppendStateChanges([]domain.StateChange{
+		{Chapter: 1, Entity: "青云宗", Field: "status", NewValue: "易主", Distance: "far"},
+	}); err != nil {
+		t.Fatalf("valid distance: %v", err)
+	}
+	if err := s.World.AppendStateChanges([]domain.StateChange{
+		{Chapter: 2, Entity: "青云宗", Field: "status", NewValue: "稳定", Distance: "很远"},
+	}); err == nil {
+		t.Fatal("invalid distance must be rejected")
+	}
+	loaded, _ := s.World.LoadStateChanges()
+	if len(loaded) != 1 || loaded[0].Distance != "far" {
+		t.Fatalf("distance persistence wrong: %+v", loaded)
 	}
 }
 
@@ -487,4 +661,81 @@ func keysOfMap(m map[int]*domain.ContinuityIssues) []int {
 		ks = append(ks, k)
 	}
 	return ks
+}
+
+// ── Foreshadow kind（hook/debt）──
+
+func TestForeshadowKind_PersistAndRender(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.World.UpdateForeshadow(3, []domain.ForeshadowUpdate{
+		{ID: "h1", Action: "plant", Description: "祠堂里的无名牌位", Kind: "hook", ExpectedPayoff: "5-8章内"},
+		{ID: "d1", Action: "plant", Description: "老周欠掌柜的三年诊金", Kind: "debt", From: "老周", To: "李掌柜"},
+		{ID: "x1", Action: "plant", Description: "旧数据无类型"},
+	}); err != nil {
+		t.Fatalf("UpdateForeshadow: %v", err)
+	}
+
+	entries, err := s.World.LoadForeshadowLedger()
+	if err != nil {
+		t.Fatalf("LoadForeshadowLedger: %v", err)
+	}
+	byID := map[string]domain.ForeshadowEntry{}
+	for _, e := range entries {
+		byID[e.ID] = e
+	}
+	if byID["h1"].Kind != "hook" || byID["d1"].Kind != "debt" || byID["x1"].Kind != "" {
+		t.Fatalf("kind persistence wrong: %+v", entries)
+	}
+	if byID["h1"].ExpectedPayoff != "5-8章内" {
+		t.Fatalf("expected_payoff persistence wrong: %+v", byID["h1"])
+	}
+	if byID["d1"].From != "老周" || byID["d1"].To != "李掌柜" {
+		t.Fatalf("debt from/to persistence wrong: %+v", byID["d1"])
+	}
+
+	// advance 不动 kind/from/to;同 ID 再 plant 不覆盖已设字段
+	if err := s.World.UpdateForeshadow(4, []domain.ForeshadowUpdate{
+		{ID: "h1", Action: "advance"},
+		{ID: "h1", Action: "plant", Description: "补充描述", Kind: "debt", From: "别人", To: "旁人"},
+	}); err != nil {
+		t.Fatalf("UpdateForeshadow#2: %v", err)
+	}
+	entries, _ = s.World.LoadForeshadowLedger()
+	byID = map[string]domain.ForeshadowEntry{}
+	for _, e := range entries {
+		byID[e.ID] = e
+	}
+	if byID["h1"].Kind != "hook" {
+		t.Fatalf("kind must not be overwritten after plant: %+v", byID["h1"])
+	}
+	if byID["h1"].Description != "祠堂里的无名牌位" {
+		t.Fatalf("existing description must be preserved: %+v", byID["h1"])
+	}
+}
+
+// ── ConsistencyCheck ──
+
+func TestConsistencyCheck_LatestWins(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.World.SaveConsistencyCheck(ConsistencyCheckRecord{
+		Chapter: 3, Passed: false,
+		Issues: []ConsistencyCheckIssue{{Type: "state_fact", Severity: "warning", Description: "人数对不上"}},
+	}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	// 重写后复检通过:同章新记录覆盖
+	if err := s.World.SaveConsistencyCheck(ConsistencyCheckRecord{Chapter: 3, Passed: true}); err != nil {
+		t.Fatalf("save2: %v", err)
+	}
+
+	got := s.World.LoadConsistencyCheck(3)
+	if got == nil || !got.Passed || len(got.Issues) != 0 {
+		t.Fatalf("latest should win: %+v", got)
+	}
+	if got.At == "" {
+		t.Fatal("At 应自动补齐")
+	}
+	if s.World.LoadConsistencyCheck(4) != nil {
+		t.Fatal("no record for ch4")
+	}
 }

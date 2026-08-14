@@ -82,6 +82,9 @@ type WritingStyleRules struct {
 type CharacterVoice struct {
 	Name  string   `json:"name"`
 	Rules []string `json:"rules"` // 2-3 条语言特征规则，每条 ≤30 字
+	// ForbiddenSpeech 可选：该角色禁止说/禁止出现在对白里的语汇（如文绉绉的
+	// 书面语、网络流行语、不合身份的口头禅）——writer 写对白时的硬锚点。
+	ForbiddenSpeech []string `json:"forbidden_speech,omitempty"`
 }
 
 // RelatedChapter 推荐回读的相关章节。

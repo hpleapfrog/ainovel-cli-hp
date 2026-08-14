@@ -20,9 +20,11 @@ import (
 type scriptedLLM struct {
 	responses []string
 	calls     atomic.Int32
+	got       []agentcore.Message
 }
 
-func (s *scriptedLLM) Generate(_ context.Context, _ []agentcore.Message, _ []agentcore.ToolSpec, _ ...agentcore.CallOption) (*agentcore.LLMResponse, error) {
+func (s *scriptedLLM) Generate(_ context.Context, msgs []agentcore.Message, _ []agentcore.ToolSpec, _ ...agentcore.CallOption) (*agentcore.LLMResponse, error) {
+	s.got = append(s.got, msgs...)
 	idx := int(s.calls.Add(1)) - 1
 	if idx >= len(s.responses) {
 		return nil, fmt.Errorf("scriptedLLM exhausted at call %d", idx+1)

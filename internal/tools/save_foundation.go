@@ -24,7 +24,7 @@ func NewSaveFoundationTool(store *store.Store) *SaveFoundationTool {
 
 func (t *SaveFoundationTool) Name() string { return "save_foundation" }
 func (t *SaveFoundationTool) Description() string {
-	return "保存小说基础设定（premise/outline/characters/world_rules/compass 等）。**这是唯一持久化入口**：未经此工具调用保存的内容不会进入 store，只在消息里输出 Markdown/JSON 等于丢失。参数固定为 {type, content, scale?, volume?, arc?}。type 可选 premise / outline / layered_outline / characters / world_rules / expand_arc / append_volume / update_compass / complete_book。premise 时 content 必须是 Markdown 字符串；其他类型 content 优先直接传 JSON 数组或对象。expand_arc 展开骨架弧的详细章节（需 volume + arc）；append_volume 追加新卷（content 为完整 VolumeOutline JSON，含弧结构；顶层带 \"final\": true 即宣告收官卷——全书在该卷收束，所有章节写完后自动完结，无需再调 complete_book）；update_compass 更新终局方向（content 为 StoryCompass JSON）；complete_book 宣告全书完结（content 传空对象 {}，直接推 Phase=Complete；工具会校验：大纲内章节已全部写完、无返工队列，否则拒绝——想提前收束用 append_volume 的 final 收官卷）。append_volume / complete_book 必须带 reason 参数（一句话判定理由，对照完结判定清单，记入裁定审计）。scale 可选，仅允许 short / mid / long。"
+	return "保存小说基础设定（premise/outline/characters/world_rules/factions/locations/compass 等）。**这是唯一持久化入口**：未经此工具调用保存的内容不会进入 store，只在消息里输出 Markdown/JSON 等于丢失。参数固定为 {type, content, scale?, volume?, arc?}。type 可选 premise / outline / layered_outline / characters / world_rules / factions / locations / expand_arc / append_volume / update_compass / complete_book。premise 时 content 必须是 Markdown 字符串；其他类型 content 优先直接传 JSON 数组或对象。factions 保存势力档案（宗门/家族/国家等水下世界组织：name/aliases/goal/relation/status/location）；locations 保存地点档案（城/域/秘境/驻地：name/aliases/kind/description/owner_faction）——势力题材必做，纯情感/悬疑题材可省。expand_arc 展开骨架弧的详细章节（需 volume + arc）；append_volume 追加新卷（content 为完整 VolumeOutline JSON，含弧结构；顶层带 \"final\": true 即宣告收官卷——全书在该卷收束，所有章节写完后自动完结，无需再调 complete_book）；update_compass 更新终局方向（content 为 StoryCompass JSON）；complete_book 宣告全书完结（content 传空对象 {}，直接推 Phase=Complete；工具会校验：大纲内章节已全部写完、无返工队列，否则拒绝——想提前收束用 append_volume 的 final 收官卷）。append_volume / complete_book 必须带 reason 参数（一句话判定理由，对照完结判定清单，记入裁定审计）。scale 可选，仅允许 short / mid / long。"
 }
 func (t *SaveFoundationTool) Label() string { return "保存设定" }
 
@@ -34,7 +34,7 @@ func (t *SaveFoundationTool) ConcurrencySafe(_ json.RawMessage) bool { return fa
 
 func (t *SaveFoundationTool) Schema() map[string]any {
 	return schema.Object(
-		schema.Property("type", schema.Enum("设定类型", "premise", "outline", "layered_outline", "characters", "world_rules", "expand_arc", "append_volume", "update_compass", "complete_book")).Required(),
+		schema.Property("type", schema.Enum("设定类型", "premise", "outline", "layered_outline", "characters", "world_rules", "factions", "locations", "expand_arc", "append_volume", "update_compass", "complete_book")).Required(),
 		schema.Property("content", map[string]any{
 			"description": "内容。premise 传 Markdown 字符串；其他类型直接传 JSON 数组或对象即可，也兼容传 JSON 字符串。expand_arc 时传章节数组。",
 		}).Required(),
@@ -167,10 +167,47 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 		if err := decode("world_rules", &rules); err != nil {
 			return nil, err
 		}
+		if err := validateWorldRules(rules); err != nil {
+			return nil, err
+		}
 		if err := t.store.World.SaveWorldRules(rules); err != nil {
 			return nil, fmt.Errorf("save world_rules: %w: %w", errs.ErrStoreWrite, err)
 		}
 		result["count"] = len(rules)
+
+	case "factions":
+		var factions []domain.Faction
+		if err := decode("factions", &factions); err != nil {
+			return nil, err
+		}
+		if err := validateFactions(factions); err != nil {
+			return nil, err
+		}
+		// LastUpdated 强制覆盖为当前已完成章节数（与 update_compass 同款：
+		// 不信任 LLM 自填，归档事实由代码保证）。
+		if p, _ := t.store.Progress.Load(); p != nil {
+			latest := p.LatestCompleted()
+			for i := range factions {
+				factions[i].LastUpdated = latest
+			}
+		}
+		if err := t.store.World.SaveFactions(factions); err != nil {
+			return nil, fmt.Errorf("save factions: %w: %w", errs.ErrStoreWrite, err)
+		}
+		result["count"] = len(factions)
+
+	case "locations":
+		var locations []domain.Location
+		if err := decode("locations", &locations); err != nil {
+			return nil, err
+		}
+		if err := validateLocations(locations); err != nil {
+			return nil, err
+		}
+		if err := t.store.World.SaveLocations(locations); err != nil {
+			return nil, fmt.Errorf("save locations: %w: %w", errs.ErrStoreWrite, err)
+		}
+		result["count"] = len(locations)
 
 	case "expand_arc":
 		if a.Volume <= 0 || a.Arc <= 0 {
@@ -181,6 +218,11 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 			return nil, err
 		}
 		if err := t.store.ExpandArc(a.Volume, a.Arc, chapters); err != nil {
+			// 已展开弧的覆盖被守卫拒绝:属前置条件错误而非存储错误——
+			// 模型需要的是换一个目标弧,或改用 append_volume。
+			if strings.Contains(err.Error(), "已展开且内容不同") {
+				return nil, fmt.Errorf("%s: %w", err, errs.ErrToolPrecondition)
+			}
 			return nil, fmt.Errorf("expand arc: %w: %w", errs.ErrStoreWrite, err)
 		}
 		result["volume"] = a.Volume
@@ -267,7 +309,7 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 		t.consumeWriterFeedback()
 
 	default:
-		return nil, fmt.Errorf("unknown type %q, expected premise/outline/layered_outline/characters/world_rules/expand_arc/append_volume/update_compass/complete_book: %w", a.Type, errs.ErrToolArgs)
+		return nil, fmt.Errorf("unknown type %q, expected premise/outline/layered_outline/characters/world_rules/factions/locations/expand_arc/append_volume/update_compass/complete_book: %w", a.Type, errs.ErrToolArgs)
 	}
 
 	// checkpoint
@@ -315,6 +357,10 @@ func foundationArtifact(t string) string {
 		return "characters.json"
 	case "world_rules":
 		return "world_rules.json"
+	case "factions":
+		return "factions.json"
+	case "locations":
+		return "locations.json"
 	case "update_compass":
 		return "meta/compass.json"
 	default:
@@ -354,6 +400,63 @@ func offsetToLineCol(s string, offset int) (int, int) {
 		}
 	}
 	return line, col
+}
+
+// validateWorldRules 校验世界规则结构：硬约束必须自洽（当前仅支持 prohibition 禁则 +
+// 受控字段，与 StateChange.Field 枚举对齐）。软设定不落 hard_constraint，此处不校验。
+func validateWorldRules(rules []domain.WorldRule) error {
+	for i, r := range rules {
+		hc := r.HardConstraint
+		if hc == nil {
+			continue
+		}
+		if hc.Kind != "prohibition" {
+			return fmt.Errorf("world_rules[%d].hard_constraint.kind %q 非法：当前仅支持 prohibition: %w", i, hc.Kind, errs.ErrToolArgs)
+		}
+		if !domain.StateField(hc.Field).Valid() {
+			return fmt.Errorf("world_rules[%d].hard_constraint.field %q 非法：须与受控枚举对齐（realm/location/status/power/rank/relation/other）: %w", i, hc.Field, errs.ErrToolArgs)
+		}
+		if strings.TrimSpace(hc.Value) == "" {
+			return fmt.Errorf("world_rules[%d].hard_constraint.value 不能为空: %w", i, errs.ErrToolArgs)
+		}
+	}
+	return nil
+}
+
+// validateFactions 校验势力档案结构：name/status 必填，重名拒绝。
+func validateFactions(factions []domain.Faction) error {
+	seen := make(map[string]bool, len(factions))
+	for i, f := range factions {
+		if strings.TrimSpace(f.Name) == "" {
+			return fmt.Errorf("factions[%d].name 不能为空: %w", i, errs.ErrToolArgs)
+		}
+		if strings.TrimSpace(f.Status) == "" {
+			return fmt.Errorf("factions[%d].status 不能为空: %w", i, errs.ErrToolArgs)
+		}
+		if seen[f.Name] {
+			return fmt.Errorf("factions[%d] 重名 %q: %w", i, f.Name, errs.ErrToolArgs)
+		}
+		seen[f.Name] = true
+	}
+	return nil
+}
+
+// validateLocations 校验地点档案结构：name/kind 必填，重名拒绝。
+func validateLocations(locations []domain.Location) error {
+	seen := make(map[string]bool, len(locations))
+	for i, l := range locations {
+		if strings.TrimSpace(l.Name) == "" {
+			return fmt.Errorf("locations[%d].name 不能为空: %w", i, errs.ErrToolArgs)
+		}
+		if strings.TrimSpace(l.Kind) == "" {
+			return fmt.Errorf("locations[%d].kind 不能为空: %w", i, errs.ErrToolArgs)
+		}
+		if seen[l.Name] {
+			return fmt.Errorf("locations[%d] 重名 %q: %w", i, l.Name, errs.ErrToolArgs)
+		}
+		seen[l.Name] = true
+	}
+	return nil
 }
 
 func normalizeFoundationContent(raw json.RawMessage) (string, error) {

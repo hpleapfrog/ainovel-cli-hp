@@ -43,6 +43,28 @@ func (s *RunMetaStore) saveUnlocked(meta domain.RunMeta) error {
 	return s.io.WriteJSONUnlocked("meta/run.json", meta)
 }
 
+// ResetForNewBook 清除跨书不应继承的运行事实（待处理干预 / 章节许可 / 一次性
+// 暂停 / 规划级别 / 启动裁定），保留 provider/style/model 等会话配置。
+// StartPrepared 开新书时调用——旧书的残留干预会对新书误触发裁定，
+// 旧书的章节许可会拦下新书第一章。
+func (s *RunMetaStore) ResetForNewBook() error {
+	return s.io.WithWriteLock(func() error {
+		meta, err := s.loadUnlocked()
+		if err != nil {
+			return err
+		}
+		if meta == nil {
+			return nil
+		}
+		meta.PendingSteer = ""
+		meta.PlanningTier = ""
+		meta.PlanStart = nil
+		meta.AdvancePermitChapter = 0
+		meta.AdvanceHold = nil
+		return s.saveUnlocked(*meta)
+	})
+}
+
 // Init 初始化或更新运行元信息;跨重启保留全部运行意图事实——
 // PlanStart 尤其关键:规划期(启动裁定已落盘、首个 foundation 未落盘)崩溃后,
 // 它是恢复规划师身份的唯一依据,被 Init 覆盖会让恢复直接停机。
